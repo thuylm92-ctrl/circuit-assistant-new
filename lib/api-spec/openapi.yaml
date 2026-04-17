@@ -3,13 +3,17 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Circuit Solver API specification
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: circuit
+    description: Circuit solving operations
+  - name: ai
+    description: AI analysis operations
 paths:
   /healthz:
     get:
@@ -24,6 +28,113 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /circuit/solve:
+    post:
+      operationId: solveCircuit
+      tags: [circuit]
+      summary: Solve a circuit using MNA
+      description: Accepts a circuit description and solves it using Modified Nodal Analysis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CircuitInput"
+      responses:
+        "200":
+          description: Solution computed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CircuitSolution"
+        "422":
+          description: Circuit cannot be solved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SolveError"
+
+  /circuit/validate:
+    post:
+      operationId: validateCircuit
+      tags: [circuit]
+      summary: Validate circuit topology
+      description: Check if a circuit is topologically valid before solving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CircuitInput"
+      responses:
+        "200":
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationResult"
+
+  /ai/analyze:
+    post:
+      operationId: analyzeCircuit
+      tags: [ai]
+      summary: AI analysis of circuit solution
+      description: Generate step-by-step natural language explanation of the MNA solution
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnalyzeRequest"
+      responses:
+        "200":
+          description: Analysis generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalysisResult"
+
+  /ai/extract-problem:
+    post:
+      operationId: extractProblem
+      tags: [ai]
+      summary: Extract problem text from uploaded image
+      description: Extract circuit problem text and requirements from an uploaded image
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtractRequest"
+      responses:
+        "200":
+          description: Problem extracted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractResult"
+
+  /ai/chat:
+    post:
+      operationId: chatWithAI
+      tags: [ai]
+      summary: Interactive Q&A about the circuit solution
+      description: Ask follow-up questions about the circuit solution
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: AI response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +145,298 @@ components:
       required:
         - status
 
+    CircuitNode:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+      required:
+        - id
+
+    CircuitElement:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum:
+            - resistor
+            - capacitor
+            - inductor
+            - voltage_source
+            - current_source
+            - vcvs
+            - vccs
+            - ccvs
+            - cccs
+            - wire
+            - ground
+            - opamp
+        nodeFrom:
+          type: string
+        nodeTo:
+          type: string
+        value:
+          type: number
+        unit:
+          type: string
+        label:
+          type: string
+        frequency:
+          type: number
+          description: Frequency in Hz for AC analysis
+        controlBranchId:
+          type: string
+          description: For controlled sources, the branch being sensed
+        gain:
+          type: number
+          description: For controlled sources, the gain factor
+      required:
+        - id
+        - type
+        - nodeFrom
+        - nodeTo
+
+    CircuitInput:
+      type: object
+      properties:
+        elements:
+          type: array
+          items:
+            $ref: "#/components/schemas/CircuitElement"
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/CircuitNode"
+        analysisType:
+          type: string
+          enum: [dc, ac]
+          default: dc
+        frequency:
+          type: number
+          description: Frequency in Hz for AC analysis
+      required:
+        - elements
+        - nodes
+
+    NodeVoltage:
+      type: object
+      properties:
+        nodeId:
+          type: string
+        voltage:
+          type: number
+        voltageImag:
+          type: number
+          description: Imaginary part for AC analysis
+        unit:
+          type: string
+      required:
+        - nodeId
+        - voltage
+        - unit
+
+    BranchCurrent:
+      type: object
+      properties:
+        elementId:
+          type: string
+        current:
+          type: number
+        currentImag:
+          type: number
+          description: Imaginary part for AC analysis
+        unit:
+          type: string
+      required:
+        - elementId
+        - current
+        - unit
+
+    CircuitSolution:
+      type: object
+      properties:
+        nodeVoltages:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeVoltage"
+        branchCurrents:
+          type: array
+          items:
+            $ref: "#/components/schemas/BranchCurrent"
+        analysisType:
+          type: string
+      required:
+        - nodeVoltages
+        - branchCurrents
+        - analysisType
+
+    SolveError:
+      type: object
+      properties:
+        error:
+          type: string
+        reason:
+          type: string
+          enum:
+            - singular_matrix
+            - disconnected_circuit
+            - no_ground
+            - unsupported_element
+            - other
+        details:
+          type: string
+      required:
+        - error
+        - reason
+
+    ValidationResult:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        issues:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              message:
+                type: string
+              elementId:
+                type: string
+            required:
+              - type
+              - message
+      required:
+        - valid
+        - issues
+
+    AnalyzeRequest:
+      type: object
+      properties:
+        circuit:
+          $ref: "#/components/schemas/CircuitInput"
+        solution:
+          $ref: "#/components/schemas/CircuitSolution"
+        problemText:
+          type: string
+          description: Optional extracted problem text from the image
+      required:
+        - circuit
+        - solution
+
+    AnalysisStep:
+      type: object
+      properties:
+        stepNumber:
+          type: integer
+        title:
+          type: string
+        explanation:
+          type: string
+        formula:
+          type: string
+      required:
+        - stepNumber
+        - title
+        - explanation
+
+    AnalysisResult:
+      type: object
+      properties:
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnalysisStep"
+        summary:
+          type: string
+        keyInsights:
+          type: array
+          items:
+            type: string
+      required:
+        - steps
+        - summary
+
+    ExtractRequest:
+      type: object
+      properties:
+        imageBase64:
+          type: string
+          description: Base64 encoded image data
+        mimeType:
+          type: string
+          description: Image MIME type (image/jpeg, image/png, etc.)
+      required:
+        - imageBase64
+        - mimeType
+
+    ExtractResult:
+      type: object
+      properties:
+        problemText:
+          type: string
+          description: Extracted problem description
+        targetVariables:
+          type: array
+          items:
+            type: string
+          description: What the problem is asking to find
+        constraints:
+          type: array
+          items:
+            type: string
+          description: Given constraints or conditions
+        isCircuitRelated:
+          type: boolean
+          description: Whether the image appears to be circuit-related
+        confidence:
+          type: number
+          description: Confidence score 0-1
+      required:
+        - isCircuitRelated
+        - confidence
+
+    ChatMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+      required:
+        - role
+        - content
+
+    ChatRequest:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatMessage"
+        circuit:
+          $ref: "#/components/schemas/CircuitInput"
+        solution:
+          $ref: "#/components/schemas/CircuitSolution"
+        analysis:
+          $ref: "#/components/schemas/AnalysisResult"
+      required:
+        - messages
+
+    ChatResponse:
+      type: object
+      properties:
+        content:
+          type: string
+        role:
+          type: string
+      required:
+        - content
+        - role

@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Circuit Solver"
+version = "1.0.0"
+id = "artifacts/circuit-solver"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22076
+
+[services.development]
+run = "pnpm --filter @workspace/circuit-solver run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/circuit-solver", "run", "build" ]
+publicDir = "artifacts/circuit-solver/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22076"
+BASE_PATH = "/"
