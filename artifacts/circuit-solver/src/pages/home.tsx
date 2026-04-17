@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "wouter";
-import { ArrowRight, CheckCircle2, XCircle, Zap, Clock } from "lucide-react";
+import { ArrowRight, CheckCircle2, XCircle, Zap } from "lucide-react";
 
 function useVisitCount() {
   const [count, setCount] = useState<number | null>(null);
@@ -31,12 +31,6 @@ export default function Home() {
             </div>
             电路解题助手
           </div>
-          {visitCount !== null && visitCount > 1 && (
-            <div className="flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border border-border">
-              <Clock className="w-3 h-3" />
-              第 {visitCount} 次访问
-            </div>
-          )}
         </div>
       </header>
 

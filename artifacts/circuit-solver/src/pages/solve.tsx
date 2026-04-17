@@ -11,10 +11,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Play, RotateCcw, Trash2, CheckCircle, Upload, Send, MessageSquare,
-  ChevronDown, AlertCircle, ImageIcon, Zap, FileText, BarChart2, ArrowLeft,
-  MoreHorizontal, Settings2
+  AlertCircle, ImageIcon, Zap, BarChart2, MoreHorizontal, Settings2,
+  CheckCircle2, X,
 } from "lucide-react";
-import { useSolveCircuit, useValidateCircuit, useAnalyzeCircuit, useExtractProblem, useChatWithAI } from "@workspace/api-client-react";
+import {
+  useSolveCircuit, useValidateCircuit, useAnalyzeCircuit,
+  useExtractProblem, useChatWithAI,
+} from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -33,6 +36,7 @@ interface CanvasEl {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const GRID = 24;
+
 const COMMON_TOOLS: { type: ElementType; short: string; full: string }[] = [
   { type: "wire",           short: "导线",  full: "导线" },
   { type: "resistor",       short: "电阻",  full: "电阻 R" },
@@ -48,44 +52,78 @@ const MORE_TOOLS: { type: ElementType; label: string }[] = [
   { type: "ccvs", label: "流控电压源 CCVS" },
   { type: "cccs", label: "流控电流源 CCCS" },
 ];
-
 const DEFAULT_UNIT: Record<string, string> = {
   resistor: "Ω", capacitor: "F", inductor: "H",
   voltage_source: "V", current_source: "A",
   vcvs: "V/V", vccs: "A/V", ccvs: "V/A", cccs: "A/A",
 };
 
-// ─── SVG Element Rendering ────────────────────────────────────────────────────
-function renderEl(el: CanvasEl | { id: string; start: Pt; end: Pt; type: string }, preview = false) {
+// Demo resistor positions for the tour animation
+const DEMO_START: Pt = { x: 96, y: 144 };
+const DEMO_END: Pt   = { x: 240, y: 144 };
+
+// ─── Tour ────────────────────────────────────────────────────────────────────
+type TourStep = "highlight-tool" | "canvas-demo" | "success" | null;
+
+function useTour() {
+  const [step, setStep] = useState<TourStep>(null);
+  const [demoPhase, setDemoPhase] = useState<0 | 1>(0);
+
+  useEffect(() => {
+    const done = localStorage.getItem("tour_done") === "true";
+    const remaining = parseInt(localStorage.getItem("tour_remaining") ?? "3", 10);
+    if (!done && remaining > 0) {
+      localStorage.setItem("tour_remaining", String(remaining - 1));
+      setStep("highlight-tool");
+    }
+  }, []);
+
+  const dismiss = () => {
+    localStorage.setItem("tour_done", "true");
+    setStep(null);
+  };
+
+  return { step, setStep, demoPhase, setDemoPhase, dismiss };
+}
+
+// ─── SVG Element Rendering ─────────────────────────────────────────────────
+function renderEl(
+  el: CanvasEl | { id: string; start: Pt; end: Pt; type: string; label?: string; value?: number; unit?: string },
+  preview = false,
+) {
   const { start, end, type } = el;
   const dx = end.x - start.x, dy = end.y - start.y;
   const len = Math.sqrt(dx * dx + dy * dy);
   const angle = Math.atan2(dy, dx) * 180 / Math.PI;
   const mx = (start.x + end.x) / 2, my = (start.y + end.y) / 2;
-  const c = "#1e40af", w = 2.5;
+  const c = "#1e40af", w = 2.5, h = len / 2;
   const T = `translate(${mx},${my}) rotate(${angle})`;
-  const h = len / 2;
 
   let body = null;
   if (type === "wire") {
     body = <line x1={-h} y1={0} x2={h} y2={0} stroke={c} strokeWidth={w} />;
   } else if (type === "resistor") {
     const zw = Math.min(28, len * 0.5);
-    body = <path d={`M${-h} 0 L${-zw/2} 0 L${-zw/2+5} -8 L${-zw/2+13} 8 L${-zw/2+21} -8 L${zw/2} 0 L${h} 0`}
-      fill="none" stroke={c} strokeWidth={w} strokeLinejoin="round" />;
+    body = (
+      <path
+        d={`M${-h} 0 L${-zw/2} 0 L${-zw/2+5} -8 L${-zw/2+13} 8 L${-zw/2+21} -8 L${zw/2} 0 L${h} 0`}
+        fill="none" stroke={c} strokeWidth={w} strokeLinejoin="round"
+      />
+    );
   } else if (type === "capacitor") {
     const g = 7, ph = 14;
     body = <g>
       <line x1={-h} y1={0} x2={-g/2} y2={0} stroke={c} strokeWidth={w} />
       <line x1={g/2} y1={0} x2={h} y2={0} stroke={c} strokeWidth={w} />
-      <line x1={-g/2} y1={-ph} x2={-g/2} y2={ph} stroke={c} strokeWidth={w+1} />
-      <line x1={g/2} y1={-ph} x2={g/2} y2={ph} stroke={c} strokeWidth={w+1} />
+      <line x1={-g/2} y1={-ph} x2={-g/2} y2={ph} stroke={c} strokeWidth={w + 1} />
+      <line x1={g/2} y1={-ph} x2={g/2} y2={ph} stroke={c} strokeWidth={w + 1} />
     </g>;
   } else if (type === "inductor") {
     const iw = Math.min(32, len * 0.5);
     body = <g>
       <line x1={-h} y1={0} x2={-iw/2} y2={0} stroke={c} strokeWidth={w} />
-      <path d={`M${-iw/2} 0 Q${-iw/2+6} -14 ${-iw/2+12} 0 T${-iw/2+24} 0 T${iw/2} 0`} fill="none" stroke={c} strokeWidth={w} />
+      <path d={`M${-iw/2} 0 Q${-iw/2+6} -14 ${-iw/2+12} 0 T${-iw/2+24} 0 T${iw/2} 0`}
+        fill="none" stroke={c} strokeWidth={w} />
       <line x1={iw/2} y1={0} x2={h} y2={0} stroke={c} strokeWidth={w} />
     </g>;
   } else if (type === "voltage_source" || type === "current_source") {
@@ -116,7 +154,6 @@ function renderEl(el: CanvasEl | { id: string; start: Pt; end: Pt; type: string 
       </g>
     );
   } else {
-    // Controlled sources — diamond
     const s = 14;
     body = <g>
       <line x1={-h} y1={0} x2={-s} y2={0} stroke={c} strokeWidth={w} />
@@ -127,8 +164,8 @@ function renderEl(el: CanvasEl | { id: string; start: Pt; end: Pt; type: string 
   }
 
   const label = (el as CanvasEl).label;
-  const val = (el as CanvasEl).value;
-  const unit = (el as CanvasEl).unit ?? "";
+  const val   = (el as CanvasEl).value;
+  const unit  = (el as CanvasEl).unit ?? "";
 
   return (
     <g key={el.id} opacity={preview ? 0.45 : 1}>
@@ -144,16 +181,126 @@ function renderEl(el: CanvasEl | { id: string; start: Pt; end: Pt; type: string 
   );
 }
 
+// ─── Tour Canvas Overlay (SVG elements) ──────────────────────────────────────
+function TourCanvasOverlay({ step, demoPhase }: { step: TourStep; demoPhase: 0 | 1 }) {
+  if (step !== "canvas-demo") return null;
+
+  return (
+    <>
+      {/* Dimming overlay */}
+      <rect width="100%" height="100%" fill="rgba(0,0,0,0.28)" style={{ pointerEvents: "none" }} />
+
+      {/* Phase 0: start point */}
+      {demoPhase === 0 && (
+        <g style={{ pointerEvents: "none" }}>
+          <circle cx={DEMO_START.x} cy={DEMO_START.y} r={22} fill="rgba(30,64,175,0.25)" className="tour-ripple" />
+          <circle cx={DEMO_START.x} cy={DEMO_START.y} r={13} fill="rgba(30,64,175,0.4)" className="tour-ping" />
+          <circle cx={DEMO_START.x} cy={DEMO_START.y} r={6}  fill="#1e40af" />
+          {/* Finger tap icon */}
+          <text x={DEMO_START.x} y={DEMO_START.y - 30} textAnchor="middle" fontSize="20">👆</text>
+          {/* Label bubble */}
+          <rect x={DEMO_START.x - 44} y={DEMO_START.y + 14} width={88} height={24} rx={6} fill="white" opacity={0.96} />
+          <text x={DEMO_START.x} y={DEMO_START.y + 30} textAnchor="middle" fontSize="12" fill="#1e40af" fontWeight="bold">
+            第一步：点击起点
+          </text>
+        </g>
+      )}
+
+      {/* Phase 1: end point + preview resistor */}
+      {demoPhase === 1 && (
+        <g style={{ pointerEvents: "none" }}>
+          {/* Start dot (dimmed) */}
+          <circle cx={DEMO_START.x} cy={DEMO_START.y} r={5} fill="rgba(30,64,175,0.5)" />
+          {/* Preview resistor */}
+          {renderEl({ id: "tour-preview", start: DEMO_START, end: DEMO_END, type: "resistor" }, false)}
+          {/* End point animation */}
+          <circle cx={DEMO_END.x} cy={DEMO_END.y} r={22} fill="rgba(30,64,175,0.25)" className="tour-ripple" />
+          <circle cx={DEMO_END.x} cy={DEMO_END.y} r={13} fill="rgba(30,64,175,0.4)" className="tour-ping" />
+          <circle cx={DEMO_END.x} cy={DEMO_END.y} r={6}  fill="#1e40af" />
+          {/* Finger tap icon */}
+          <text x={DEMO_END.x} y={DEMO_END.y - 30} textAnchor="middle" fontSize="20">👆</text>
+          {/* Label bubble */}
+          <rect x={DEMO_END.x - 44} y={DEMO_END.y + 14} width={88} height={24} rx={6} fill="white" opacity={0.96} />
+          <text x={DEMO_END.x} y={DEMO_END.y + 30} textAnchor="middle" fontSize="12" fill="#1e40af" fontWeight="bold">
+            第二步：点击终点
+          </text>
+        </g>
+      )}
+    </>
+  );
+}
+
+// ─── Tour Step Tooltip ────────────────────────────────────────────────────────
+function TourTooltip({
+  step, onSkip, onDismiss,
+}: { step: TourStep; onSkip: () => void; onDismiss: () => void }) {
+  if (!step) return null;
+
+  return (
+    <div className="absolute left-3 right-3 z-40 animate-in slide-in-from-top-2"
+      style={{ top: "8px" }}>
+      {step === "highlight-tool" && (
+        <div className="bg-card border-2 border-primary rounded-2xl shadow-xl p-3.5 flex items-start gap-3">
+          {/* Arrow decoration */}
+          <div className="absolute -top-2.5 left-8 w-4 h-4 bg-card border-l-2 border-t-2 border-primary rotate-45" />
+          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+            <span className="text-primary text-sm font-bold">1</span>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold text-sm text-foreground">点击"电阻"元件</p>
+            <p className="text-xs text-muted-foreground mt-0.5">从工具栏中选择高亮的电阻，我来演示如何在画布上放置它。</p>
+          </div>
+          <button onClick={onSkip} className="shrink-0 text-muted-foreground hover:text-foreground p-1">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {step === "canvas-demo" && (
+        <div className="bg-card border-2 border-primary/50 rounded-2xl shadow-xl p-3.5 flex items-start gap-3">
+          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+            <span className="text-primary text-sm font-bold">2</span>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold text-sm text-foreground">在画布上点击两次</p>
+            <p className="text-xs text-muted-foreground mt-0.5">先点击起点，再点击终点，一个元件就放置完成了。</p>
+          </div>
+          <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin shrink-0 mt-1" />
+        </div>
+      )}
+
+      {step === "success" && (
+        <div className="bg-card border-2 border-green-500/50 rounded-2xl shadow-xl p-3.5 flex items-start gap-3">
+          <div className="w-8 h-8 rounded-full bg-green-500/10 flex items-center justify-center shrink-0">
+            <CheckCircle2 className="w-5 h-5 text-green-500" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold text-sm text-foreground">电阻放置成功！</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              继续添加电压源、接地等元件，完成后点击"提交求解"获得答案。
+            </p>
+          </div>
+          <button
+            onClick={onDismiss}
+            className="shrink-0 bg-primary text-primary-foreground text-xs font-semibold px-3 py-1.5 rounded-lg active:opacity-80 whitespace-nowrap">
+            我知道了
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 type Tab = "upload" | "canvas" | "results" | "chat";
 
 export default function Solve() {
   const { toast } = useToast();
 
-  // ── Tab state
+  // ── Tab
   const [tab, setTab] = useState<Tab>("canvas");
 
-  // ── Upload state
+  // ── Upload
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [problemExtracted, setProblemExtracted] = useState<{
     isCircuitRelated: boolean; confidence: number;
@@ -161,7 +308,7 @@ export default function Solve() {
   } | null>(null);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
 
-  // ── Canvas state
+  // ── Canvas
   const [elements, setElements] = useState<CanvasEl[]>([]);
   const [selectedTool, setSelectedTool] = useState<ElementType | null>(null);
   const [drawingStart, setDrawingStart] = useState<Pt | null>(null);
@@ -177,7 +324,7 @@ export default function Solve() {
   const [analysisType, setAnalysisType] = useState<"dc" | "ac">("dc");
   const [acFreq, setAcFreq] = useState(50);
 
-  // ── Solution state
+  // ── Solution
   const [solution, setSolution] = useState<{
     nodeVoltages: { nodeId: string; voltage: number; voltageImag?: number; unit: string }[];
     branchCurrents: { elementId: string; current: number; currentImag?: number; unit: string }[];
@@ -189,20 +336,59 @@ export default function Solve() {
   } | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
 
-  // ── Chat state
+  // ── Chat
   const [chatMsgs, setChatMsgs] = useState<{ role: string; content: string }[]>([]);
   const [chatInput, setChatInput] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // ── SVG refs for coordinate conversion
+  // ── SVG ref
   const svgRef = useRef<SVGSVGElement>(null);
 
   // ── API hooks
-  const extractProblem = useExtractProblem();
+  const extractProblem  = useExtractProblem();
   const validateCircuit = useValidateCircuit();
-  const solveCircuit = useSolveCircuit();
-  const analyzeCircuit = useAnalyzeCircuit();
-  const chatWithAI = useChatWithAI();
+  const solveCircuit    = useSolveCircuit();
+  const analyzeCircuit  = useAnalyzeCircuit();
+  const chatWithAI      = useChatWithAI();
+
+  // ── Tour
+  const { step: tourStep, setStep: setTourStep, demoPhase, setDemoPhase, dismiss: dismissTour } = useTour();
+
+  // Auto-switch to canvas tab when tour starts
+  useEffect(() => {
+    if (tourStep === "highlight-tool") setTab("canvas");
+  }, [tourStep]);
+
+  // Advance tour when user selects resistor
+  useEffect(() => {
+    if (tourStep === "highlight-tool" && selectedTool === "resistor") {
+      setTourStep("canvas-demo");
+      setDemoPhase(0);
+    }
+  }, [selectedTool, tourStep]);
+
+  // Canvas demo sequence
+  useEffect(() => {
+    if (tourStep !== "canvas-demo") return;
+    if (demoPhase === 0) {
+      const t = setTimeout(() => setDemoPhase(1), 1800);
+      return () => clearTimeout(t);
+    }
+    if (demoPhase === 1) {
+      const t = setTimeout(() => {
+        setElements(prev => [...prev, {
+          id: "demo-r1", type: "resistor" as ElementType,
+          start: DEMO_START, end: DEMO_END,
+          value: 10, unit: "Ω", label: "R1",
+        }]);
+        setSelectedTool(null);
+        setDrawingStart(null);
+        setPreviewEnd(null);
+        setTourStep("success");
+      }, 1800);
+      return () => clearTimeout(t);
+    }
+  }, [demoPhase, tourStep]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -210,7 +396,6 @@ export default function Solve() {
 
   // ── Helpers
   const snap = (v: number) => Math.round(v / GRID) * GRID;
-
   const svgPt = useCallback((clientX: number, clientY: number): Pt => {
     const svg = svgRef.current;
     if (!svg) return { x: 0, y: 0 };
@@ -219,41 +404,34 @@ export default function Solve() {
   }, []);
 
   const buildCircuitInput = () => ({
-    nodes: Array.from(new Set(elements.flatMap((e) => [
+    nodes: Array.from(new Set(elements.flatMap(e => [
       `${e.start.x},${e.start.y}`,
       e.type === "ground" ? "0" : `${e.end.x},${e.end.y}`,
-    ]))).map((id) => ({ id })),
-    elements: elements.map((e) => ({
-      id: e.id,
-      type: e.type,
+    ]))).map(id => ({ id })),
+    elements: elements.map(e => ({
+      id: e.id, type: e.type,
       nodeFrom: `${e.start.x},${e.start.y}`,
       nodeTo: e.type === "ground" ? "0" : `${e.end.x},${e.end.y}`,
-      value: e.value,
-      unit: e.unit,
-      label: e.label,
-      controlBranchId: e.controlBranchId,
-      gain: e.gain,
+      value: e.value, unit: e.unit, label: e.label,
+      controlBranchId: e.controlBranchId, gain: e.gain,
     })),
-    analysisType,
-    frequency: acFreq,
+    analysisType, frequency: acFreq,
   });
 
-  // ── Canvas interaction (unified mouse + touch)
+  // ── Canvas interaction
   const handlePoint = (clientX: number, clientY: number) => {
-    if (!selectedTool) return;
+    if (!selectedTool || tourStep === "canvas-demo") return;
     const pt = svgPt(clientX, clientY);
 
     if (selectedTool === "ground") {
-      setElements((prev) => [...prev, {
+      setElements(prev => [...prev, {
         id: Math.random().toString(36).slice(2), type: "ground",
         start: pt, end: { x: pt.x, y: pt.y + GRID }, label: "GND",
       }]);
       return;
     }
-
     if (!drawingStart) {
-      setDrawingStart(pt);
-      setPreviewEnd(pt);
+      setDrawingStart(pt); setPreviewEnd(pt);
     } else {
       if (drawingStart.x === pt.x && drawingStart.y === pt.y) {
         setDrawingStart(null); setPreviewEnd(null); return;
@@ -261,46 +439,34 @@ export default function Solve() {
       const newEl: CanvasEl = {
         id: Math.random().toString(36).slice(2),
         type: selectedTool, start: drawingStart, end: pt,
-        value: selectedTool === "resistor" ? 1 : 1,
-        unit: DEFAULT_UNIT[selectedTool] ?? "",
+        value: 1, unit: DEFAULT_UNIT[selectedTool] ?? "",
         label: `${selectedTool[0].toUpperCase()}${elements.length + 1}`,
       };
-      setElements((prev) => [...prev, newEl]);
+      setElements(prev => [...prev, newEl]);
       setDrawingStart(null); setPreviewEnd(null);
       if (selectedTool !== "wire") {
-        setEditId(newEl.id);
-        setEditProps(newEl);
-        setPropOpen(true);
+        setEditId(newEl.id); setEditProps(newEl); setPropOpen(true);
       }
     }
   };
 
-  const handleMove = (clientX: number, clientY: number) => {
-    if (drawingStart) setPreviewEnd(svgPt(clientX, clientY));
-  };
-
-  // Mouse events
   const onMouseClick = (e: React.MouseEvent<SVGSVGElement>) => handlePoint(e.clientX, e.clientY);
-  const onMouseMove = (e: React.MouseEvent<SVGSVGElement>) => handleMove(e.clientX, e.clientY);
-
-  // Touch events
+  const onMouseMove  = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (drawingStart) setPreviewEnd(svgPt(e.clientX, e.clientY));
+  };
   const onTouchStart = (e: React.TouchEvent<SVGSVGElement>) => {
-    e.preventDefault();
-    const t = e.touches[0];
-    handlePoint(t.clientX, t.clientY);
+    e.preventDefault(); const t = e.touches[0]; handlePoint(t.clientX, t.clientY);
   };
   const onTouchMove = (e: React.TouchEvent<SVGSVGElement>) => {
     e.preventDefault();
-    const t = e.touches[0];
-    handleMove(t.clientX, t.clientY);
+    if (drawingStart) setPreviewEnd(svgPt(e.touches[0].clientX, e.touches[0].clientY));
   };
 
   // ── Actions
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const file = e.target.files?.[0]; if (!file) return;
     const reader = new FileReader();
-    reader.onload = async (ev) => {
+    reader.onload = async ev => {
       const base64full = ev.target?.result as string;
       setImagePreview(base64full);
       try {
@@ -321,7 +487,7 @@ export default function Solve() {
     try {
       const res = await validateCircuit.mutateAsync({ data: buildCircuitInput() });
       if (res.valid) toast({ title: "验证成功", description: "电路拓扑结构有效" });
-      else toast({ title: "验证失败", description: res.issues.map((i) => i.message).join("；"), variant: "destructive" });
+      else toast({ title: "验证失败", description: res.issues.map(i => i.message).join("；"), variant: "destructive" });
     } catch { toast({ title: "错误", description: "验证失败", variant: "destructive" }); }
   };
 
@@ -349,14 +515,12 @@ export default function Solve() {
   const handleSendChat = async () => {
     if (!chatInput.trim()) return;
     const newMsgs = [...chatMsgs, { role: "user", content: chatInput }];
-    setChatMsgs(newMsgs);
-    setChatInput("");
+    setChatMsgs(newMsgs); setChatInput("");
     try {
       const res = await chatWithAI.mutateAsync({
         data: {
-          messages: newMsgs.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
-          solution: solution ?? undefined,
-          analysis: analysis ?? undefined,
+          messages: newMsgs.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
+          solution: solution ?? undefined, analysis: analysis ?? undefined,
         },
       });
       setChatMsgs([...newMsgs, { role: "assistant", content: res.content }]);
@@ -364,8 +528,9 @@ export default function Solve() {
   };
 
   const isLoading = solveCircuit.isPending || analyzeCircuit.isPending;
+  const isTourDemo = tourStep === "canvas-demo";
 
-  // ── UI ────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
 
@@ -373,12 +538,10 @@ export default function Solve() {
       <header className="shrink-0 flex items-center justify-between px-4 h-12 border-b border-border bg-card z-20">
         <Link href="/" className="flex items-center gap-1.5 text-primary font-bold">
           <Zap className="w-4 h-4" />
-          <span className="text-sm">电路求解器</span>
+          <span className="text-sm">电路解题助手</span>
         </Link>
-
-        {/* Analysis type — compact */}
         <div className="flex items-center gap-2">
-          <Select value={analysisType} onValueChange={(v) => setAnalysisType(v as "dc" | "ac")}>
+          <Select value={analysisType} onValueChange={v => setAnalysisType(v as "dc" | "ac")}>
             <SelectTrigger className="h-8 w-24 text-xs border-primary/30">
               <SelectValue />
             </SelectTrigger>
@@ -389,7 +552,7 @@ export default function Solve() {
           </Select>
           {analysisType === "ac" && (
             <div className="flex items-center gap-1">
-              <Input type="number" value={acFreq} onChange={(e) => setAcFreq(Number(e.target.value))}
+              <Input type="number" value={acFreq} onChange={e => setAcFreq(Number(e.target.value))}
                 className="h-8 w-16 text-xs px-2" />
               <span className="text-xs text-muted-foreground">Hz</span>
             </div>
@@ -408,7 +571,6 @@ export default function Solve() {
                 <ImageIcon className="w-4 h-4 text-primary" />
                 上传题目图片
               </h2>
-
               <label htmlFor="img-input" className="block border-2 border-dashed border-border hover:border-primary/50 rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer bg-muted/20 transition-colors active:bg-muted/40">
                 <input type="file" id="img-input" className="sr-only" accept="image/*" onChange={handleImageUpload} />
                 <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-3">
@@ -417,7 +579,6 @@ export default function Solve() {
                 <p className="font-medium text-sm">点击选择图片</p>
                 <p className="text-xs text-muted-foreground mt-1">支持 JPG、PNG</p>
               </label>
-
               {imagePreview && (
                 <div className="rounded-xl overflow-hidden border border-border relative bg-muted flex items-center justify-center min-h-[180px]">
                   <img src={imagePreview} alt="题目图片" className="max-w-full max-h-72 object-contain" />
@@ -429,7 +590,6 @@ export default function Solve() {
                   )}
                 </div>
               )}
-
               {problemExtracted && (
                 <div className="space-y-4 animate-in fade-in">
                   {problemExtracted.problemText && (
@@ -450,18 +610,8 @@ export default function Solve() {
                       </div>
                     </div>
                   )}
-                  {!!problemExtracted.constraints?.length && (
-                    <div className="space-y-1.5">
-                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">已知条件</p>
-                      <ul className="text-sm text-muted-foreground space-y-1 pl-4 list-disc">
-                        {problemExtracted.constraints.map((c, i) => <li key={i}>{c}</li>)}
-                      </ul>
-                    </div>
-                  )}
-
                   <Button className="w-full h-12" onClick={() => setTab("canvas")}>
                     开始绘制电路
-                    <ArrowLeft className="w-4 h-4 ml-2 rotate-180" />
                   </Button>
                 </div>
               )}
@@ -472,59 +622,78 @@ export default function Solve() {
         {/* ── CANVAS TAB ── */}
         {tab === "canvas" && (
           <div className="h-full flex flex-col">
-            {/* Element toolbar — horizontally scrollable */}
+            {/* Element toolbar */}
             <div className="shrink-0 bg-card border-b border-border">
               <div className="flex items-center gap-1.5 px-2 py-2 overflow-x-auto no-scrollbar">
-                {COMMON_TOOLS.map((t) => (
-                  <button
-                    key={t.type}
-                    onClick={() => { setSelectedTool(t.type); setDrawingStart(null); }}
-                    className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors
-                      ${selectedTool === t.type
-                        ? "bg-primary text-primary-foreground border-primary shadow-sm"
-                        : "bg-card text-foreground border-border active:bg-muted"}`}
-                  >
-                    {t.short}
-                  </button>
-                ))}
+                {COMMON_TOOLS.map(t => {
+                  const isHighlighted = tourStep === "highlight-tool" && t.type === "resistor";
+                  return (
+                    <button
+                      key={t.type}
+                      onClick={() => { setSelectedTool(t.type); setDrawingStart(null); }}
+                      className={[
+                        "shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all",
+                        selectedTool === t.type
+                          ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                          : isHighlighted
+                            ? "bg-primary/10 text-primary border-primary animate-pulse shadow-[0_0_0_3px_rgba(30,64,175,0.25)]"
+                            : "bg-card text-foreground border-border active:bg-muted",
+                      ].join(" ")}
+                    >
+                      {t.short}
+                    </button>
+                  );
+                })}
                 <button
                   onClick={() => setShowMoreTools(true)}
-                  className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-border bg-card text-muted-foreground flex items-center gap-1 active:bg-muted"
-                >
+                  className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border border-border bg-card text-muted-foreground flex items-center gap-1 active:bg-muted">
                   <MoreHorizontal className="w-3.5 h-3.5" />
                   更多
                 </button>
               </div>
 
-              {/* Drawing hint */}
+              {/* Drawing hint + undo/clear */}
               <div className="px-3 pb-2 flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-muted-foreground truncate pr-2">
                   {selectedTool
-                    ? drawingStart
-                      ? "点击画布设置终点"
+                    ? drawingStart ? "点击画布设置终点"
                       : `已选：${COMMON_TOOLS.find(t => t.type === selectedTool)?.full ?? selectedTool}  —  点击起点`
-                    : "选择元件后点击画布绘制"}
+                    : tourStep === "highlight-tool"
+                      ? "点击上方高亮的电阻元件开始引导"
+                      : "选择元件后点击画布绘制"}
                 </p>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 shrink-0">
                   <button onClick={() => setElements(prev => prev.slice(0, -1))}
-                    disabled={!elements.length}
+                    disabled={!elements.length || isTourDemo}
                     className="h-7 px-2 text-xs rounded-md border border-border bg-card text-muted-foreground disabled:opacity-40 flex items-center gap-1 active:bg-muted">
                     <RotateCcw className="w-3 h-3" /> 撤销
                   </button>
                   <button onClick={() => { setElements([]); setDrawingStart(null); }}
-                    className="h-7 px-2 text-xs rounded-md border border-border bg-card text-muted-foreground flex items-center gap-1 active:bg-muted">
+                    disabled={isTourDemo}
+                    className="h-7 px-2 text-xs rounded-md border border-border bg-card text-muted-foreground flex items-center gap-1 active:bg-muted disabled:opacity-40">
                     <Trash2 className="w-3 h-3" /> 清空
                   </button>
                 </div>
               </div>
             </div>
 
-            {/* SVG Canvas */}
+            {/* SVG canvas */}
             <div className="flex-1 relative bg-[#f4f7fb] overflow-hidden touch-none">
+
+              {/* Tour tooltip overlaid at top of canvas area */}
+              <TourTooltip
+                step={tourStep}
+                onSkip={dismissTour}
+                onDismiss={dismissTour}
+              />
+
               <svg
                 ref={svgRef}
                 className="w-full h-full"
-                style={{ cursor: selectedTool ? "crosshair" : "default" }}
+                style={{
+                  cursor: isTourDemo ? "default" : selectedTool ? "crosshair" : "default",
+                  pointerEvents: isTourDemo ? "none" : undefined,
+                }}
                 onClick={onMouseClick}
                 onMouseMove={onMouseMove}
                 onTouchStart={onTouchStart}
@@ -538,9 +707,9 @@ export default function Solve() {
                 </defs>
                 <rect width="100%" height="100%" fill="url(#g)" />
 
-                {elements.map((el) => (
-                  <g key={el.id} onClick={(e) => {
-                    if (selectedTool) return; // don't open dialog while placing
+                {elements.map(el => (
+                  <g key={el.id} onClick={e => {
+                    if (selectedTool || tourStep) return;
                     e.stopPropagation();
                     if (el.type !== "wire" && el.type !== "ground") {
                       setEditId(el.id); setEditProps(el); setPropOpen(true);
@@ -550,9 +719,11 @@ export default function Solve() {
                   </g>
                 ))}
 
-                {drawingStart && previewEnd && selectedTool && renderEl(
-                  { id: "preview", start: drawingStart, end: previewEnd, type: selectedTool }, true
-                )}
+                {drawingStart && previewEnd && selectedTool &&
+                  renderEl({ id: "preview", start: drawingStart, end: previewEnd, type: selectedTool }, true)}
+
+                {/* Tour canvas overlay */}
+                <TourCanvasOverlay step={tourStep} demoPhase={demoPhase} />
               </svg>
 
               {/* Loading overlay */}
@@ -571,24 +742,29 @@ export default function Solve() {
                 <div className="absolute top-3 left-3 right-3 z-20 bg-destructive/10 border border-destructive/30 text-destructive rounded-xl p-3 flex items-start gap-2 text-xs shadow">
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                   <p className="flex-1">{solveError}</p>
-                  <button onClick={() => setSolveError(null)} className="shrink-0">✕</button>
+                  <button onClick={() => setSolveError(null)}>✕</button>
                 </div>
               )}
             </div>
 
-            {/* Canvas bottom action bar */}
+            {/* Bottom action bar */}
             <div className="shrink-0 bg-card border-t border-border px-3 py-2 flex gap-2">
               <button
                 onClick={handleValidate}
-                disabled={validateCircuit.isPending || !elements.length}
+                disabled={validateCircuit.isPending || !elements.length || !!tourStep}
                 className="flex-1 h-11 rounded-xl border border-primary/40 text-primary font-medium text-sm flex items-center justify-center gap-1.5 disabled:opacity-40 active:bg-primary/5">
                 <CheckCircle className="w-4 h-4" />
                 验证
               </button>
               <button
                 onClick={handleSolve}
-                disabled={isLoading || !elements.length}
-                className="flex-[2] h-11 rounded-xl bg-primary text-primary-foreground font-semibold text-sm flex items-center justify-center gap-1.5 shadow-md disabled:opacity-50 active:opacity-90">
+                disabled={isLoading || !elements.length || !!tourStep}
+                className={[
+                  "flex-[2] h-11 rounded-xl font-semibold text-sm flex items-center justify-center gap-1.5 shadow-md disabled:opacity-50 active:opacity-90 transition-all",
+                  tourStep === "success"
+                    ? "bg-primary text-primary-foreground animate-pulse ring-4 ring-primary/30"
+                    : "bg-primary text-primary-foreground",
+                ].join(" ")}>
                 <Play className="w-4 h-4" />
                 提交求解
               </button>
@@ -607,7 +783,6 @@ export default function Solve() {
                   <Button variant="outline" onClick={() => setTab("canvas")}>前往画布</Button>
                 </div>
               )}
-
               {solveError && (
                 <div className="rounded-xl bg-destructive/10 border border-destructive/20 p-4 flex items-start gap-3">
                   <AlertCircle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
@@ -617,10 +792,8 @@ export default function Solve() {
                   </div>
                 </div>
               )}
-
               {solution && (
                 <>
-                  {/* Node voltages */}
                   <div className="space-y-2">
                     <div className="flex items-center gap-2">
                       <h3 className="text-sm font-semibold">节点电压</h3>
@@ -647,8 +820,6 @@ export default function Solve() {
                       </table>
                     </div>
                   </div>
-
-                  {/* Branch currents */}
                   <div className="space-y-2">
                     <div className="flex items-center gap-2">
                       <h3 className="text-sm font-semibold">支路电流</h3>
@@ -675,15 +846,12 @@ export default function Solve() {
                       </table>
                     </div>
                   </div>
-
-                  {/* AI analysis */}
                   {analyzeCircuit.isPending && (
                     <div className="rounded-xl border border-border bg-primary/5 p-4 flex items-center gap-3">
                       <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin shrink-0" />
                       <p className="text-sm text-primary font-medium">AI 正在生成解析...</p>
                     </div>
                   )}
-
                   {analysis && (
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
@@ -693,7 +861,6 @@ export default function Solve() {
                       <div className="text-sm text-muted-foreground bg-muted/30 p-4 rounded-xl border border-border leading-relaxed">
                         {analysis.summary}
                       </div>
-
                       <Accordion type="single" collapsible className="space-y-2">
                         {analysis.steps.map((step, idx) => (
                           <AccordionItem key={idx} value={`s-${idx}`} className="border border-border rounded-xl overflow-hidden px-4">
@@ -708,7 +875,7 @@ export default function Solve() {
                             <AccordionContent className="text-sm text-muted-foreground pb-4 pl-9 leading-relaxed">
                               <p>{step.explanation}</p>
                               {step.formula && (
-                                <div className="mt-3 p-3 bg-card rounded-lg font-mono text-xs text-foreground border border-border overflow-x-auto">
+                                <div className="mt-3 p-3 bg-card rounded-lg font-mono text-xs border border-border overflow-x-auto">
                                   {step.formula}
                                 </div>
                               )}
@@ -716,21 +883,18 @@ export default function Solve() {
                           </AccordionItem>
                         ))}
                       </Accordion>
-
                       {analysis.keyInsights.length > 0 && (
                         <div className="space-y-2">
                           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">关键结论</p>
                           <ul className="space-y-1.5">
                             {analysis.keyInsights.map((ins, i) => (
-                              <li key={i} className="text-sm text-foreground flex items-start gap-2">
-                                <span className="text-primary mt-0.5">•</span>
-                                {ins}
+                              <li key={i} className="text-sm flex items-start gap-2">
+                                <span className="text-primary mt-0.5">•</span>{ins}
                               </li>
                             ))}
                           </ul>
                         </div>
                       )}
-
                       <Button className="w-full h-12 mt-2" onClick={() => setTab("chat")}>
                         <MessageSquare className="w-4 h-4 mr-2" />
                         向 AI 助教提问
@@ -748,7 +912,6 @@ export default function Solve() {
           <div className="h-full flex flex-col">
             <ScrollArea className="flex-1 px-4 pt-4 pb-2">
               <div className="space-y-3 pb-2">
-                {/* Welcome */}
                 <div className="flex justify-start">
                   <div className="max-w-[85%] bg-card border border-border rounded-2xl rounded-tl-sm p-3 text-sm text-foreground shadow-sm leading-relaxed">
                     您好！我是 AI 助教。有关这道电路题的任何疑问，请随时问我。
@@ -783,21 +946,13 @@ export default function Solve() {
                 <div ref={chatEndRef} />
               </div>
             </ScrollArea>
-
-            {/* Chat input */}
             <div className="shrink-0 p-3 bg-card border-t border-border">
-              <form onSubmit={(e) => { e.preventDefault(); handleSendChat(); }}
+              <form onSubmit={e => { e.preventDefault(); handleSendChat(); }}
                 className="flex items-center gap-2 bg-muted/40 border border-border rounded-full pl-4 pr-1.5 py-1.5 focus-within:ring-2 focus-within:ring-primary/30 focus-within:border-primary transition-all">
-                <input
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  placeholder="输入问题..."
-                  className="flex-1 bg-transparent outline-none text-sm placeholder:text-muted-foreground"
-                  disabled={chatWithAI.isPending}
-                />
-                <button
-                  type="submit"
-                  disabled={!chatInput.trim() || chatWithAI.isPending}
+                <input value={chatInput} onChange={e => setChatInput(e.target.value)}
+                  placeholder="输入问题..." className="flex-1 bg-transparent outline-none text-sm placeholder:text-muted-foreground"
+                  disabled={chatWithAI.isPending} />
+                <button type="submit" disabled={!chatInput.trim() || chatWithAI.isPending}
                   className="w-9 h-9 rounded-full bg-primary text-primary-foreground flex items-center justify-center shrink-0 shadow-sm disabled:opacity-40 active:opacity-80">
                   <Send className="w-4 h-4 ml-0.5" />
                 </button>
@@ -814,21 +969,16 @@ export default function Solve() {
           { id: "canvas",  icon: <Settings2 className="w-5 h-5" />,     label: "画布" },
           { id: "results", icon: <BarChart2 className="w-5 h-5" />,     label: "结果" },
           { id: "chat",    icon: <MessageSquare className="w-5 h-5" />, label: "问答" },
-        ] as { id: Tab; icon: React.ReactNode; label: string }[]).map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
+        ] as { id: Tab; icon: React.ReactNode; label: string }[]).map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
             className={`flex flex-col items-center justify-center gap-1 py-2.5 transition-colors relative
-              ${tab === t.id ? "text-primary" : "text-muted-foreground active:text-foreground"}`}
-          >
+              ${tab === t.id ? "text-primary" : "text-muted-foreground active:text-foreground"}`}>
             {t.id === "results" && solution && tab !== "results" && (
               <span className="absolute top-1.5 right-6 w-2 h-2 rounded-full bg-green-500 ring-1 ring-background" />
             )}
             {t.icon}
             <span className="text-[10px] font-medium">{t.label}</span>
-            {tab === t.id && (
-              <span className="absolute top-0 left-1/4 right-1/4 h-0.5 bg-primary rounded-full" />
-            )}
+            {tab === t.id && <span className="absolute top-0 left-1/4 right-1/4 h-0.5 bg-primary rounded-full" />}
           </button>
         ))}
       </nav>
@@ -843,15 +993,13 @@ export default function Solve() {
               <button onClick={() => setShowMoreTools(false)} className="text-muted-foreground text-xl leading-none">✕</button>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              {MORE_TOOLS.map((t) => (
-                <button
-                  key={t.type}
+              {MORE_TOOLS.map(t => (
+                <button key={t.type}
                   onClick={() => { setSelectedTool(t.type); setShowMoreTools(false); setTab("canvas"); }}
                   className={`h-12 rounded-xl border text-sm font-medium transition-colors
                     ${selectedTool === t.type
                       ? "bg-primary text-primary-foreground border-primary"
-                      : "border-border text-foreground bg-card active:bg-muted"}`}
-                >
+                      : "border-border text-foreground bg-card active:bg-muted"}`}>
                   {t.label}
                 </button>
               ))}
@@ -871,31 +1019,33 @@ export default function Solve() {
             <div className="space-y-1.5">
               <Label className="text-xs font-semibold">标签</Label>
               <Input value={editProps.label ?? ""} className="h-11 font-mono"
-                onChange={(e) => setEditProps({ ...editProps, label: e.target.value })} />
+                onChange={e => setEditProps({ ...editProps, label: e.target.value })} />
             </div>
             {editProps.type !== "wire" && editProps.type !== "ground" && (
               <div className="space-y-1.5">
                 <Label className="text-xs font-semibold">数值</Label>
                 <div className="flex gap-2">
                   <Input type="number" step="any" className="flex-1 h-11 font-mono"
-                    value={editProps.value ?? ""} onChange={(e) => setEditProps({ ...editProps, value: Number(e.target.value) })} />
+                    value={editProps.value ?? ""}
+                    onChange={e => setEditProps({ ...editProps, value: Number(e.target.value) })} />
                   <Input className="w-14 h-11 text-center font-mono bg-muted"
-                    value={editProps.unit ?? ""} onChange={(e) => setEditProps({ ...editProps, unit: e.target.value })} />
+                    value={editProps.unit ?? ""}
+                    onChange={e => setEditProps({ ...editProps, unit: e.target.value })} />
                 </div>
               </div>
             )}
-            {["vcvs", "vccs", "ccvs", "cccs"].includes(editProps.type ?? "") && (
+            {["vcvs","vccs","ccvs","cccs"].includes(editProps.type ?? "") && (
               <>
                 <Separator />
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold">控制支路 ID</Label>
                   <Input className="h-11 font-mono" placeholder="如: R1" value={editProps.controlBranchId ?? ""}
-                    onChange={(e) => setEditProps({ ...editProps, controlBranchId: e.target.value })} />
+                    onChange={e => setEditProps({ ...editProps, controlBranchId: e.target.value })} />
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold">增益</Label>
                   <Input type="number" step="any" className="h-11 font-mono" value={editProps.gain ?? ""}
-                    onChange={(e) => setEditProps({ ...editProps, gain: Number(e.target.value) })} />
+                    onChange={e => setEditProps({ ...editProps, gain: Number(e.target.value) })} />
                 </div>
               </>
             )}
@@ -903,7 +1053,7 @@ export default function Solve() {
           <DialogFooter className="gap-2 flex-row justify-end">
             <Button variant="outline" className="flex-1 h-11" onClick={() => setPropOpen(false)}>取消</Button>
             <Button className="flex-1 h-11" onClick={() => {
-              setElements((prev) => prev.map((e) => e.id === editId ? { ...e, ...editProps } as CanvasEl : e));
+              setElements(prev => prev.map(e => e.id === editId ? { ...e, ...editProps } as CanvasEl : e));
               setPropOpen(false);
             }}>保存</Button>
           </DialogFooter>
