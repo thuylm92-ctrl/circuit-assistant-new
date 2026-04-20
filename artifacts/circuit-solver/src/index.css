@@ -149,13 +149,13 @@
 }
 
 @keyframes tour-ripple {
-  0%   { opacity: 0.9; transform: scale(1); }
-  100% { opacity: 0;   transform: scale(2.8); }
+  0%   { opacity: 1;   transform: scale(1); }
+  100% { opacity: 0;   transform: scale(3.6); }
 }
 @keyframes tour-ping {
   0%   { opacity: 1;   transform: scale(1); }
-  70%  { opacity: 0.3; transform: scale(2); }
-  100% { opacity: 0;   transform: scale(2.4); }
+  60%  { opacity: 0.6; transform: scale(2.6); }
+  100% { opacity: 0;   transform: scale(3); }
 }
 @keyframes tour-cursor-drop {
   0%   { transform: translate(0, -16px); opacity: 0; }
@@ -163,6 +163,11 @@
   80%  { transform: translate(0, 0);     opacity: 1; }
   100% { transform: translate(0, 0);     opacity: 0; }
 }
-.tour-ripple  { animation: tour-ripple  1.4s ease-out infinite; }
-.tour-ping    { animation: tour-ping    1.4s ease-out infinite; }
+@keyframes tour-btn-glow {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(30,64,175,0.5), 0 0 16px 4px rgba(30,64,175,0.35); }
+  50%       { box-shadow: 0 0 0 6px rgba(30,64,175,0.7), 0 0 28px 8px rgba(30,64,175,0.55); }
+}
+.tour-ripple  { animation: tour-ripple  1.2s ease-out infinite; }
+.tour-ping    { animation: tour-ping    1.2s ease-out infinite; }
 .tour-cursor  { animation: tour-cursor-drop 2s ease forwards; }
+.tour-btn-glow { animation: tour-btn-glow 0.9s ease-in-out infinite; }

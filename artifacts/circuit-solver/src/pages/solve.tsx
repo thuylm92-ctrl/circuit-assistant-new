@@ -375,7 +375,7 @@ export default function Solve() {
   useEffect(() => {
     if (tourStep !== "canvas-demo") return;
     if (demoPhase === 0) {
-      const t = setTimeout(() => setDemoPhase(1), 1800);
+      const t = setTimeout(() => setDemoPhase(1), 3200);
       return () => clearTimeout(t);
     }
     if (demoPhase === 1) {
@@ -389,7 +389,7 @@ export default function Solve() {
         setDrawingStart(null);
         setPreviewEnd(null);
         setTourStep("success");
-      }, 1800);
+      }, 3200);
       return () => clearTimeout(t);
     }
   }, [demoPhase, tourStep]);
@@ -766,7 +766,7 @@ export default function Solve() {
                         selectedTool === t.type
                           ? "bg-primary text-primary-foreground border-primary shadow-sm"
                           : isHighlighted
-                            ? "bg-primary/10 text-primary border-primary animate-pulse shadow-[0_0_0_3px_rgba(30,64,175,0.25)]"
+                            ? "bg-primary/20 text-primary border-primary tour-btn-glow"
                             : "bg-card text-foreground border-border active:bg-muted",
                       ].join(" ")}
                     >
