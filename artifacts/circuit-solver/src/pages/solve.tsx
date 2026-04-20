@@ -65,18 +65,19 @@ const DEMO_END: Pt   = { x: 240, y: 144 };
 // ─── Tour ────────────────────────────────────────────────────────────────────
 type TourStep = "highlight-tool" | "canvas-demo" | "success" | null;
 
-function useTour() {
+function useTour(ready: boolean) {
   const [step, setStep] = useState<TourStep>(null);
   const [demoPhase, setDemoPhase] = useState<0 | 1>(0);
 
   useEffect(() => {
+    if (!ready) return;
     const done = localStorage.getItem("tour_done") === "true";
     const remaining = parseInt(localStorage.getItem("tour_remaining") ?? "3", 10);
     if (!done && remaining > 0) {
       localStorage.setItem("tour_remaining", String(remaining - 1));
       setStep("highlight-tool");
     }
-  }, []);
+  }, [ready]);
 
   const dismiss = () => {
     localStorage.setItem("tour_done", "true");
@@ -300,6 +301,9 @@ export default function Solve() {
   // ── Tab
   const [tab, setTab] = useState<Tab>("canvas");
 
+  // ── Upload gate (shown first before canvas)
+  const [showUploadGate, setShowUploadGate] = useState(true);
+
   // ── Upload
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [problemExtracted, setProblemExtracted] = useState<{
@@ -351,8 +355,8 @@ export default function Solve() {
   const analyzeCircuit  = useAnalyzeCircuit();
   const chatWithAI      = useChatWithAI();
 
-  // ── Tour
-  const { step: tourStep, setStep: setTourStep, demoPhase, setDemoPhase, dismiss: dismissTour } = useTour();
+  // ── Tour (only starts after upload gate is dismissed)
+  const { step: tourStep, setStep: setTourStep, demoPhase, setDemoPhase, dismiss: dismissTour } = useTour(!showUploadGate);
 
   // Auto-switch to canvas tab when tour starts
   useEffect(() => {
@@ -530,9 +534,135 @@ export default function Solve() {
   const isLoading = solveCircuit.isPending || analyzeCircuit.isPending;
   const isTourDemo = tourStep === "canvas-demo";
 
+  // Dismiss gate and proceed to canvas
+  const enterCanvas = () => {
+    setShowUploadGate(false);
+    setTab("canvas");
+  };
+
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
+
+      {/* ── UPLOAD GATE ─────────────────────────────────────────────────── */}
+      {showUploadGate && (
+        <div className="fixed inset-0 z-50 bg-background flex flex-col">
+          {/* Gate header */}
+          <header className="shrink-0 flex items-center px-4 h-12 border-b border-border bg-card">
+            <div className="flex items-center gap-2 text-primary font-bold">
+              <Zap className="w-4 h-4" />
+              <span className="text-sm">电路解题助手</span>
+            </div>
+          </header>
+
+          <ScrollArea className="flex-1">
+            <div className="px-4 py-6 space-y-5 max-w-lg mx-auto">
+              {/* Title */}
+              <div className="space-y-1">
+                <h1 className="text-xl font-bold">上传题目图片</h1>
+                <p className="text-sm text-muted-foreground">
+                  AI 将自动识别题目内容，提取已知量和求解目标，帮助您更准确地绘制电路。
+                </p>
+              </div>
+
+              {/* Upload area */}
+              <label
+                htmlFor="gate-img-input"
+                className="block border-2 border-dashed border-border hover:border-primary/50 active:border-primary rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer bg-muted/20 transition-colors"
+              >
+                <input
+                  type="file"
+                  id="gate-img-input"
+                  className="sr-only"
+                  accept="image/*"
+                  onChange={handleImageUpload}
+                />
+                {!imagePreview ? (
+                  <>
+                    <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+                      <Upload className="w-8 h-8 text-primary" />
+                    </div>
+                    <p className="font-semibold text-base">点击选择题目图片</p>
+                    <p className="text-xs text-muted-foreground mt-1.5">支持 JPG、PNG 格式</p>
+                  </>
+                ) : (
+                  <div className="relative w-full">
+                    <img
+                      src={imagePreview}
+                      alt="题目图片"
+                      className="max-w-full max-h-64 object-contain rounded-xl mx-auto"
+                    />
+                    {extractProblem.isPending && (
+                      <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex flex-col items-center justify-center gap-2 rounded-xl">
+                        <div className="w-8 h-8 border-[3px] border-primary border-t-transparent rounded-full animate-spin" />
+                        <span className="text-sm text-primary font-semibold">AI 识别中...</span>
+                      </div>
+                    )}
+                    {!extractProblem.isPending && (
+                      <div className="mt-3 text-xs text-muted-foreground">点击重新选择图片</div>
+                    )}
+                  </div>
+                )}
+              </label>
+
+              {/* Extracted content */}
+              {problemExtracted && !extractProblem.isPending && (
+                <div className="space-y-4 animate-in fade-in">
+                  <div className="rounded-xl border border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950/30 p-4 flex items-start gap-3">
+                    <CheckCircle2 className="w-5 h-5 text-green-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-sm text-green-800 dark:text-green-300">识别成功</p>
+                      <p className="text-xs text-green-700 dark:text-green-400 mt-0.5">
+                        {problemExtracted.isCircuitRelated ? "已检测到电路题目" : "未确认为电路题，仍可继续"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {problemExtracted.problemText && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">提取的题目文字</p>
+                      <div className="text-sm bg-muted/40 border border-border rounded-xl p-3 leading-relaxed whitespace-pre-wrap">
+                        {problemExtracted.problemText}
+                      </div>
+                    </div>
+                  )}
+
+                  {!!problemExtracted.targetVariables?.length && (
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">求解目标</p>
+                      <div className="flex flex-wrap gap-2">
+                        {problemExtracted.targetVariables.map((v, i) => (
+                          <Badge key={i} className="bg-primary/10 text-primary border-primary/20">{v}</Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* CTA button */}
+              <button
+                onClick={enterCanvas}
+                disabled={extractProblem.isPending}
+                className="w-full h-14 rounded-xl bg-primary text-primary-foreground font-semibold text-base flex items-center justify-center gap-2 shadow-lg disabled:opacity-60 active:opacity-90 transition-opacity"
+              >
+                {problemExtracted ? "开始绘制电路" : "上传后开始绘制"}
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 12h14M12 5l7 7-7 7"/>
+                </svg>
+              </button>
+
+              {/* Skip */}
+              <button
+                onClick={enterCanvas}
+                className="w-full text-center text-sm text-muted-foreground py-2 active:text-foreground transition-colors"
+              >
+                跳过，直接绘制电路
+              </button>
+            </div>
+          </ScrollArea>
+        </div>
+      )}
 
       {/* Top header */}
       <header className="shrink-0 flex items-center justify-between px-4 h-12 border-b border-border bg-card z-20">
