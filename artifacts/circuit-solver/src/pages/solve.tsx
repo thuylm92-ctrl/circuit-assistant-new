@@ -469,21 +469,55 @@ export default function Solve() {
   // ── Actions
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async ev => {
-      const base64full = ev.target?.result as string;
-      setImagePreview(base64full);
+
+    // Compress the image client-side to keep the payload reasonable for the AI
+    // (max 1600px on the long side, JPEG quality 0.85 — keeps text readable).
+    const compressImage = (file: File): Promise<{ dataUrl: string; mimeType: string }> => {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error("read failed"));
+        reader.onload = () => {
+          const img = new Image();
+          img.onerror = () => reject(new Error("decode failed"));
+          img.onload = () => {
+            const MAX = 1600;
+            let { width, height } = img;
+            if (width > MAX || height > MAX) {
+              const scale = MAX / Math.max(width, height);
+              width = Math.round(width * scale);
+              height = Math.round(height * scale);
+            }
+            const canvas = document.createElement("canvas");
+            canvas.width = width; canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) { reject(new Error("no ctx")); return; }
+            ctx.drawImage(img, 0, 0, width, height);
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+            resolve({ dataUrl, mimeType: "image/jpeg" });
+          };
+          img.src = reader.result as string;
+        };
+        reader.readAsDataURL(file);
+      });
+    };
+
+    try {
+      const { dataUrl, mimeType } = await compressImage(file);
+      setImagePreview(dataUrl);
       try {
         const result = await extractProblem.mutateAsync({
-          data: { imageBase64: base64full.split(",")[1], mimeType: file.type },
+          data: { imageBase64: dataUrl.split(",")[1], mimeType },
         });
         setProblemExtracted(result);
         if (!result.isCircuitRelated) setShowConfirmDialog(true);
-      } catch {
-        toast({ title: "提取失败", description: "无法从图片中提取题目信息。", variant: "destructive" });
+      } catch (err: unknown) {
+        const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+          ?? "无法从图片中提取题目信息，请尝试更清晰的图片。";
+        toast({ title: "提取失败", description: msg, variant: "destructive" });
       }
-    };
-    reader.readAsDataURL(file);
+    } catch {
+      toast({ title: "图片处理失败", description: "无法读取该图片，请换一张试试。", variant: "destructive" });
+    }
   };
 
   const handleValidate = async () => {
