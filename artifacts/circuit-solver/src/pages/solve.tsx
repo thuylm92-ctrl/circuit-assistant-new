@@ -65,19 +65,22 @@ const DEMO_END: Pt   = { x: 240, y: 144 };
 // ─── Tour ────────────────────────────────────────────────────────────────────
 type TourStep = "highlight-tool" | "canvas-demo" | "success" | null;
 
-function useTour(ready: boolean) {
+function useTour(ready: boolean, forceStep?: string | null) {
   const [step, setStep] = useState<TourStep>(null);
   const [demoPhase, setDemoPhase] = useState<0 | 1>(0);
 
   useEffect(() => {
     if (!ready) return;
+    if (forceStep === "highlight") { setStep("highlight-tool"); return; }
+    if (forceStep === "demo")      { setStep("canvas-demo");    return; }
+    if (forceStep === "success")   { setStep("success");        return; }
     const done = localStorage.getItem("tour_done") === "true";
     const remaining = parseInt(localStorage.getItem("tour_remaining") ?? "3", 10);
     if (!done && remaining > 0) {
       localStorage.setItem("tour_remaining", String(remaining - 1));
       setStep("highlight-tool");
     }
-  }, [ready]);
+  }, [ready, forceStep]);
 
   const dismiss = () => {
     localStorage.setItem("tour_done", "true");
@@ -301,8 +304,22 @@ export default function Solve() {
   // ── Tab
   const [tab, setTab] = useState<Tab>("canvas");
 
-  // ── Upload gate (shown first before canvas)
-  const [showUploadGate, setShowUploadGate] = useState(true);
+  // ── Demo mode: ?tour=1 in URL skips the gate and force-replays the tour
+  //    Optional ?step=highlight|demo|success jumps directly to a phase
+  const urlParams = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const isDemoMode = urlParams.get("tour") === "1";
+  const demoStartStep = urlParams.get("step");
+
+  useEffect(() => {
+    if (isDemoMode) {
+      localStorage.removeItem("tour_done");
+      localStorage.setItem("tour_remaining", "1");
+    }
+  }, [isDemoMode]);
+
+  // ── Upload gate (shown first before canvas; skipped in demo mode)
+  const [showUploadGate, setShowUploadGate] = useState(!isDemoMode);
 
   // ── Upload
   const [imagePreview, setImagePreview] = useState<string | null>(null);
@@ -356,7 +373,7 @@ export default function Solve() {
   const chatWithAI      = useChatWithAI();
 
   // ── Tour (only starts after upload gate is dismissed)
-  const { step: tourStep, setStep: setTourStep, demoPhase, setDemoPhase, dismiss: dismissTour } = useTour(!showUploadGate);
+  const { step: tourStep, setStep: setTourStep, demoPhase, setDemoPhase, dismiss: dismissTour } = useTour(!showUploadGate, demoStartStep);
 
   // Auto-switch to canvas tab when tour starts
   useEffect(() => {
