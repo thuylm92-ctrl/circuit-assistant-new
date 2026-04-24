@@ -24,6 +24,7 @@ import {
   useExtractProblem, useChatWithAI,
 } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type ElementType =
@@ -445,13 +446,24 @@ export default function Solve() {
   const [previewEnd, setPreviewEnd] = useState<Pt | null>(null);
   const [showMoreTools, setShowMoreTools] = useState(false);
 
+  // Track the latest elements via a ref so deferred callers (e.g. the toast
+  // "undo" action that fires seconds after a deletion) always snapshot the
+  // current canvas, not a stale closure value.
+  const elementsRef = useRef(elements);
+  elementsRef.current = elements;
+
   // commitElements: snapshot current state into history then mutate.
   // Used for every user-initiated mutation so undo can restore it
   // (placement, edits, deletion, clear). Tour-driven changes bypass this.
-  const commitElements = (updater: (prev: CanvasEl[]) => CanvasEl[]) => {
-    setHistory(h => [...h, elements].slice(-50));
-    setElements(updater);
-  };
+  // If the updater returns the same reference (no-op), we skip the snapshot
+  // so the undo stack never grows from no-ops.
+  const commitElements = useCallback((updater: (prev: CanvasEl[]) => CanvasEl[]) => {
+    const prev = elementsRef.current;
+    const next = updater(prev);
+    if (next === prev) return;
+    setHistory(h => [...h, prev].slice(-50));
+    setElements(next);
+  }, []);
   const undo = () => {
     setHistory(h => {
       if (!h.length) return h;
@@ -1514,7 +1526,20 @@ export default function Solve() {
             <div className="flex gap-2">
               <Button variant="outline" className="h-11" onClick={() => setPropOpen(false)}>取消</Button>
               <Button className="h-11" onClick={() => {
-                commitElements(prev => prev.map(e => e.id === editId ? { ...e, ...editProps } as CanvasEl : e));
+                const current = elements.find(e => e.id === editId);
+                // Element no longer exists (e.g. concurrent delete) — skip
+                // committing so we don't push an empty change to undo history.
+                if (!current) { setPropOpen(false); return; }
+                const merged = { ...current, ...editProps } as CanvasEl;
+                const changed =
+                  current.label !== merged.label ||
+                  current.value !== merged.value ||
+                  current.unit !== merged.unit ||
+                  current.controlBranchId !== merged.controlBranchId ||
+                  current.gain !== merged.gain;
+                if (changed) {
+                  commitElements(prev => prev.map(e => e.id === editId ? merged : e));
+                }
                 setPropOpen(false);
               }}>保存</Button>
             </div>
@@ -1539,13 +1564,32 @@ export default function Solve() {
             <AlertDialogAction
               className="h-11 bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
+                const removed = elements.find(e => e.id === editId);
                 const removedLabel = editProps.label ?? "元件";
+                if (!removed) return;
                 commitElements(prev => prev.filter(e => e.id !== editId));
                 setDeleteConfirmOpen(false);
                 setPropOpen(false);
                 setEditId(null);
                 setEditProps({});
-                toast({ title: `已删除元件 ${removedLabel}`, duration: 2000 });
+                toast({
+                  title: `已删除元件 ${removedLabel}`,
+                  description: "如果是误删，可以点击右侧撤销恢复。",
+                  duration: 6000,
+                  action: (
+                    <ToastAction
+                      altText="撤销删除"
+                      data-testid="button-toast-undo-delete"
+                      onClick={() => {
+                        commitElements(prev =>
+                          prev.some(e => e.id === removed.id) ? prev : [...prev, removed],
+                        );
+                      }}
+                    >
+                      撤销
+                    </ToastAction>
+                  ),
+                });
               }}
               data-testid="button-confirm-delete-element"
             >

@@ -36,6 +36,7 @@ A Chinese-language mobile-first web app helping university students solve circui
 - Mobile-first bottom 4-tab nav: 题目 / 画布 / 结果 / 助教.
 - Canvas uses an SVG grid; click two grid points to place an element. After placing a non-wire element, the property dialog auto-opens.
 - Property dialog supports edit + **delete** (red destructive button + confirmation dialog + toast). The delete button is disabled while the tour-mode demo element (`demo-r1`) is active.
+- All user mutations (placement, edit, delete, clear) flow through `commitElements`, which snapshots the previous state into a 50-deep `history` stack. The top toolbar "撤销" button pops the stack to restore the prior state. The delete toast also exposes a quick "撤销" action that re-adds the removed element. No-op saves (auto-opened property dialog where nothing changed) are filtered out so a single placement counts as one undo step.
 
 ### AI analyze pipeline (`/api/ai/analyze`)
 - The MNA solver is the source of truth (`artifacts/api-server/src/lib/mna-solver.ts`).
