@@ -11,4 +11,10 @@ export interface AnalysisResult {
   steps: AnalysisStep[];
   summary: string;
   keyInsights?: string[];
+  /** True if AI's independently computed answers matched the MNA solver within tolerance */
+  verified?: boolean;
+  /** How many AI attempts were made (1-3) */
+  verificationAttempts?: number;
+  /** Optional message shown to the user when verification failed or partially passed */
+  verificationNote?: string;
 }

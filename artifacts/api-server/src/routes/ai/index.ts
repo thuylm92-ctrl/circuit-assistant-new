@@ -84,6 +84,126 @@ router.post("/ai/extract-problem", async (req, res): Promise<void> => {
   }
 });
 
+interface AnalyzeNodeVoltage { nodeId: string; voltage: number; voltageImag?: number; unit: string }
+interface AnalyzeBranchCurrent { elementId: string; current: number; currentImag?: number; unit: string }
+interface AnalyzeStep { stepNumber: number; title: string; explanation: string; formula?: string }
+
+interface AnalyzeAIOutput {
+  steps?: AnalyzeStep[];
+  summary?: string;
+  keyInsights?: string[];
+  computedAnswers?: {
+    nodeVoltages?: Array<{ nodeId: string; voltage: number; voltageImag?: number }>;
+    branchCurrents?: Array<{ elementId: string; current: number; currentImag?: number }>;
+  };
+}
+
+const VERIFY_TOL_REL = 0.01; // 1% relative tolerance
+const VERIFY_TOL_ABS = 1e-3; // absolute floor for near-zero values
+const MAX_ATTEMPTS = 3;
+
+function compareScalar(aiVal: number, mnaVal: number): boolean {
+  const diff = Math.abs(aiVal - mnaVal);
+  if (diff <= VERIFY_TOL_ABS) return true;
+  const denom = Math.max(Math.abs(mnaVal), VERIFY_TOL_ABS);
+  return diff / denom <= VERIFY_TOL_REL;
+}
+
+function compareComplex(
+  aiRe: number, aiIm: number,
+  mnaRe: number, mnaIm: number,
+): boolean {
+  const diff = Math.hypot(aiRe - mnaRe, aiIm - mnaIm);
+  if (diff <= VERIFY_TOL_ABS) return true;
+  const mag = Math.max(Math.hypot(mnaRe, mnaIm), VERIFY_TOL_ABS);
+  return diff / mag <= VERIFY_TOL_REL;
+}
+
+function safeNum(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function fmt(n: number | null): string {
+  return n === null ? "(无效值)" : n.toFixed(4);
+}
+
+function verifyAIAgainstMNA(
+  aiAnswers: AnalyzeAIOutput["computedAnswers"],
+  solution: { nodeVoltages: AnalyzeNodeVoltage[]; branchCurrents: AnalyzeBranchCurrent[]; analysisType: string },
+): { passed: boolean; mismatches: string[] } {
+  const mismatches: string[] = [];
+  const isAc = solution.analysisType === "ac";
+
+  if (!aiAnswers) {
+    return { passed: false, mismatches: ["未返回computedAnswers字段"] };
+  }
+
+  for (const mna of solution.nodeVoltages) {
+    const ai = aiAnswers.nodeVoltages?.find((x) => x.nodeId === mna.nodeId);
+    if (!ai) {
+      mismatches.push(`节点${mna.nodeId}的电压未独立计算`);
+      continue;
+    }
+    const vRe = safeNum(ai.voltage);
+    if (vRe === null) {
+      mismatches.push(`节点${mna.nodeId}电压数值无效（不是有效数字）`);
+      continue;
+    }
+    if (isAc) {
+      const vIm = safeNum(ai.voltageImag) ?? 0;
+      const ok = compareComplex(vRe, vIm, mna.voltage, mna.voltageImag ?? 0);
+      if (!ok) {
+        mismatches.push(
+          `节点${mna.nodeId}电压：你算的是 ${fmt(vRe)}+j${fmt(vIm)}，正确应该是 ${fmt(mna.voltage)}+j${fmt(mna.voltageImag ?? 0)}`,
+        );
+      }
+    } else {
+      const ok = compareScalar(vRe, mna.voltage);
+      if (!ok) {
+        mismatches.push(
+          `节点${mna.nodeId}电压：你算的是 ${fmt(vRe)} V，正确应该是 ${fmt(mna.voltage)} V`,
+        );
+      }
+    }
+  }
+
+  for (const mna of solution.branchCurrents) {
+    const ai = aiAnswers.branchCurrents?.find((x) => x.elementId === mna.elementId);
+    if (!ai) {
+      mismatches.push(`元件${mna.elementId}的电流未独立计算`);
+      continue;
+    }
+    const iRe = safeNum(ai.current);
+    if (iRe === null) {
+      mismatches.push(`元件${mna.elementId}电流数值无效（不是有效数字）`);
+      continue;
+    }
+    if (isAc) {
+      const iIm = safeNum(ai.currentImag) ?? 0;
+      const ok = compareComplex(iRe, iIm, mna.current, mna.currentImag ?? 0);
+      if (!ok) {
+        mismatches.push(
+          `元件${mna.elementId}电流：你算的是 ${fmt(iRe)}+j${fmt(iIm)}，正确应该是 ${fmt(mna.current)}+j${fmt(mna.currentImag ?? 0)}`,
+        );
+      }
+    } else {
+      const ok = compareScalar(iRe, mna.current);
+      if (!ok) {
+        mismatches.push(
+          `元件${mna.elementId}电流：你算的是 ${fmt(iRe)} A，正确应该是 ${fmt(mna.current)} A（注意：电流方向约定从节点${(mna as { nodeFrom?: string }).nodeFrom ?? "起点"}→节点${(mna as { nodeTo?: string }).nodeTo ?? "终点"}为正）`,
+        );
+      }
+    }
+  }
+
+  return { passed: mismatches.length === 0, mismatches };
+}
+
 router.post("/ai/analyze", async (req, res): Promise<void> => {
   const { circuit, solution, problemText } = req.body as {
     circuit: {
@@ -92,8 +212,8 @@ router.post("/ai/analyze", async (req, res): Promise<void> => {
       analysisType?: string;
     };
     solution: {
-      nodeVoltages: Array<{ nodeId: string; voltage: number; voltageImag?: number; unit: string }>;
-      branchCurrents: Array<{ elementId: string; current: number; currentImag?: number; unit: string }>;
+      nodeVoltages: AnalyzeNodeVoltage[];
+      branchCurrents: AnalyzeBranchCurrent[];
       analysisType: string;
     };
     problemText?: string;
@@ -104,42 +224,26 @@ router.post("/ai/analyze", async (req, res): Promise<void> => {
     return;
   }
 
-  // Build a structured description of the circuit and solution
+  // Build a structured description of the circuit (NO MNA answer leaked here)
   const circuitDesc = circuit.elements
     .filter((e) => e.type !== "wire" && e.type !== "ground")
     .map((e) => `${e.label ?? e.id}（${e.type}）: ${e.value ?? ""}${e.unit ?? ""}，从节点${e.nodeFrom}到节点${e.nodeTo}`)
     .join("\n");
 
-  const nodeVoltagesDesc = solution.nodeVoltages
-    .map((n) => {
-      if (solution.analysisType === "ac" && n.voltageImag !== undefined) {
-        return `节点${n.nodeId}: V = ${n.voltage.toFixed(4)} + j${(n.voltageImag ?? 0).toFixed(4)} V`;
-      }
-      return `节点${n.nodeId}: V = ${n.voltage.toFixed(4)} V`;
-    })
-    .join("\n");
+  const nodeIds = solution.nodeVoltages.map((n) => n.nodeId).join(", ");
+  const elementIds = solution.branchCurrents.map((b) => b.elementId).join(", ");
 
-  const branchCurrentsDesc = solution.branchCurrents
-    .map((b) => {
-      const el = circuit.elements.find((e) => e.id === b.elementId);
-      const name = el?.label ?? b.elementId;
-      if (solution.analysisType === "ac" && b.currentImag !== undefined) {
-        return `${name}: I = ${b.current.toFixed(4)} + j${(b.currentImag ?? 0).toFixed(4)} A`;
-      }
-      return `${name}: I = ${b.current.toFixed(4)} A`;
-    })
-    .join("\n");
-
-  const systemPrompt = `你是一位专业的电路分析教师，正在向大学生解释电路题目的解题过程。
-你有已知的正确答案（由MNA修正节点分析法数值求解器算出），你的任务是用清晰的步骤解释如何得到这个答案。
+  const systemPrompt = `你是一位专业的电路分析教师，正在独立分析并向大学生解释电路题目的解题过程。
 
 重要原则：
-1. 所有解释必须与提供的数值答案完全一致，不得编造或改变任何数值
-2. 按照实际的解题思路解释每一步
-3. 每一步要包含具体的公式（使用LaTeX格式，用$$包围）
-4. 解释要面向初学者，但也要保证准确性
-5. 如果答案中有零或接近零的量，要解释为什么
-6. 分析类型：${solution.analysisType === "ac" ? "交流稳态分析（相量法）" : "直流稳态分析"}
+1. 你必须独立推导，不得倒着编造过程。每一步的算式与最终数值必须自洽。
+2. 每一步要包含具体的公式（使用LaTeX格式，用$$包围）
+3. 解释要面向初学者，但要保证数学严谨
+4. 分析类型：${solution.analysisType === "ac" ? "交流稳态分析（相量法）" : "直流稳态分析"}
+5. 在 \`computedAnswers\` 字段里，按你独立推导的结果，填入所有节点电压（节点编号：${nodeIds}）与所有元件电流（元件编号：${elementIds}）。这些数字将与权威求解器逐项比对，请认真计算。
+6. 单位约定：电压用伏特(V)，电流用安培(A)。AC分析时使用复数（实部+虚部，j为虚数单位）。
+7. **电流参考方向约定**：每个元件的电流取"从 nodeFrom 流向 nodeTo"为正方向（电路描述里"从节点A到节点B"中A是nodeFrom）。如果实际电流相反，请填入负值。这一点非常重要，否则数值会被判为错误。
+8. 节点电压均以接地节点（节点编号通常含"0"或"gnd"）为参考点；接地节点电压为0。
 
 返回一个JSON对象：
 {
@@ -152,51 +256,78 @@ router.post("/ai/analyze", async (req, res): Promise<void> => {
     }
   ],
   "summary": "总结性结论",
-  "keyInsights": ["关键点1", "关键点2"]
+  "keyInsights": ["关键点1", "关键点2"],
+  "computedAnswers": {
+    "nodeVoltages": [{ "nodeId": "n1", "voltage": 12.5${solution.analysisType === "ac" ? ", \"voltageImag\": 0" : ""} }],
+    "branchCurrents": [{ "elementId": "R1", "current": 0.625${solution.analysisType === "ac" ? ", \"currentImag\": 0" : ""} }]
+  }
 }
 
 只返回JSON，不要有其他文字。`;
 
-  const userMessage = `${problemText ? `题目要求：\n${problemText}\n\n` : ""}电路描述：
+  const baseUserMessage = `${problemText ? `题目要求：\n${problemText}\n\n` : ""}电路描述：
 ${circuitDesc}
 
-MNA求解结果（此为正确答案）：
-节点电压：
-${nodeVoltagesDesc}
-
-支路电流：
-${branchCurrentsDesc}
-
-请基于以上正确答案，给出清晰的分步解题过程。`;
+请独立完成解题，给出清晰的分步推导过程，并在 computedAnswers 字段里给出你算得的所有节点电压和支路电流。`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-5.2",
-      max_completion_tokens: 4096,
-      messages: [
+    let lastParsed: AnalyzeAIOutput = {};
+    let attempts = 0;
+    let verified = false;
+    let lastMismatches: string[] = [];
+
+    for (attempts = 1; attempts <= MAX_ATTEMPTS; attempts++) {
+      // Rebuild a compact message list each round (don't append history → keeps token cost flat)
+      const messages: { role: "system" | "user"; content: string }[] = [
         { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
-    });
+        { role: "user", content: baseUserMessage },
+      ];
 
-    const content = response.choices[0]?.message?.content ?? "{}";
-    let parsed: {
-      steps?: Array<{ stepNumber: number; title: string; explanation: string; formula?: string }>;
-      summary?: string;
-      keyInsights?: string[];
-    };
+      if (attempts > 1 && lastMismatches.length > 0) {
+        messages.push({
+          role: "user",
+          content: `你之前的推导出现了以下偏差（这是第 ${attempts}/${MAX_ATTEMPTS} 次尝试），请重新独立推导。**不要直接照抄下面的"正确值"**，而是检查你的方法/方程/参考方向哪里不对，从头按正确思路推导：
+${lastMismatches.map((m) => `- ${m}`).join("\n")}
 
-    try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
-    } catch {
-      parsed = {};
+请重新输出完整的JSON（包含steps、summary、keyInsights、computedAnswers），保证每一步的算式自洽且与computedAnswers一致。`,
+        });
+      }
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-5.2",
+        max_completion_tokens: 4096,
+        messages,
+      });
+
+      const content = response.choices[0]?.message?.content ?? "{}";
+      try {
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        lastParsed = jsonMatch ? (JSON.parse(jsonMatch[0]) as AnalyzeAIOutput) : {};
+      } catch {
+        lastParsed = {};
+      }
+
+      const { passed, mismatches } = verifyAIAgainstMNA(lastParsed.computedAnswers, solution);
+      lastMismatches = mismatches;
+      if (passed) {
+        verified = true;
+        break;
+      }
+    }
+
+    let verificationNote: string | undefined;
+    if (!verified) {
+      verificationNote = `AI 经过 ${MAX_ATTEMPTS} 次尝试仍无法给出与权威求解器一致的解题过程，下方步骤仅供参考，准确数值以"求解结果"为准。`;
+      req.log.warn({ mismatches: lastMismatches, attempts }, "AI verification failed after max attempts");
     }
 
     res.json({
-      steps: parsed.steps ?? [],
-      summary: parsed.summary ?? "分析完成。",
-      keyInsights: parsed.keyInsights ?? [],
+      steps: lastParsed.steps ?? [],
+      summary: lastParsed.summary ?? "分析完成。",
+      keyInsights: lastParsed.keyInsights ?? [],
+      verified,
+      verificationAttempts: attempts > MAX_ATTEMPTS ? MAX_ATTEMPTS : attempts,
+      ...(verificationNote ? { verificationNote } : {}),
     });
   } catch (err) {
     req.log.error({ err }, "Failed to analyze circuit");

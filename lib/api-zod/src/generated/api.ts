@@ -268,6 +268,22 @@ export const AnalyzeCircuitResponse = zod.object({
   ),
   summary: zod.string(),
   keyInsights: zod.array(zod.string()).optional(),
+  verified: zod
+    .boolean()
+    .optional()
+    .describe(
+      "True if AI's independently computed answers matched the MNA solver within tolerance",
+    ),
+  verificationAttempts: zod
+    .number()
+    .optional()
+    .describe("How many AI attempts were made (1-3)"),
+  verificationNote: zod
+    .string()
+    .optional()
+    .describe(
+      "Optional message shown to the user when verification failed or partially passed",
+    ),
 });
 
 /**
@@ -405,6 +421,22 @@ export const ChatWithAIBody = zod.object({
       ),
       summary: zod.string(),
       keyInsights: zod.array(zod.string()).optional(),
+      verified: zod
+        .boolean()
+        .optional()
+        .describe(
+          "True if AI's independently computed answers matched the MNA solver within tolerance",
+        ),
+      verificationAttempts: zod
+        .number()
+        .optional()
+        .describe("How many AI attempts were made (1-3)"),
+      verificationNote: zod
+        .string()
+        .optional()
+        .describe(
+          "Optional message shown to the user when verification failed or partially passed",
+        ),
     })
     .optional(),
 });

@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   Play, RotateCcw, Trash2, CheckCircle, Upload, Send, MessageSquare,
   AlertCircle, ImageIcon, Zap, BarChart2, MoreHorizontal, Settings2,
-  CheckCircle2, X,
+  CheckCircle2, X, ShieldCheck, ShieldAlert,
 } from "lucide-react";
 import {
   useSolveCircuit, useValidateCircuit, useAnalyzeCircuit,
@@ -451,9 +451,15 @@ export default function Solve() {
   } | null>(null);
   const [analysis, setAnalysis] = useState<{
     steps: { stepNumber: number; title: string; explanation: string; formula?: string }[];
-    summary: string; keyInsights: string[];
+    summary: string; keyInsights?: string[];
+    verified?: boolean;
+    verificationAttempts?: number;
+    verificationNote?: string;
   } | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
+
+  // ── Delete element confirmation
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   // ── Chat
   const [chatMsgs, setChatMsgs] = useState<{ role: string; content: string }[]>([]);
@@ -1134,10 +1140,30 @@ export default function Solve() {
                   )}
                   {analysis && (
                     <div className="space-y-3">
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
                         <h3 className="text-sm font-semibold">AI 解析</h3>
-                        <Badge className="text-xs">AI 生成</Badge>
+                        {analysis.verified ? (
+                          <Badge className="text-xs gap-1 bg-emerald-600 hover:bg-emerald-600 text-white">
+                            <ShieldCheck className="w-3 h-3" />
+                            已校验 · {analysis.verificationAttempts ?? 1}/3
+                          </Badge>
+                        ) : analysis.verified === false ? (
+                          <Badge variant="outline" className="text-xs gap-1 border-amber-500 text-amber-700 dark:text-amber-400">
+                            <ShieldAlert className="w-3 h-3" />
+                            未通过校验
+                          </Badge>
+                        ) : (
+                          <Badge className="text-xs">AI 生成</Badge>
+                        )}
                       </div>
+                      {analysis.verified === false && analysis.verificationNote && (
+                        <div className="rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 p-3 flex items-start gap-2">
+                          <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                          <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+                            {analysis.verificationNote}
+                          </p>
+                        </div>
+                      )}
                       <div className="text-sm text-muted-foreground bg-muted/30 p-4 rounded-xl border border-border leading-relaxed">
                         {analysis.summary}
                       </div>
@@ -1163,11 +1189,11 @@ export default function Solve() {
                           </AccordionItem>
                         ))}
                       </Accordion>
-                      {analysis.keyInsights.length > 0 && (
+                      {(analysis.keyInsights?.length ?? 0) > 0 && (
                         <div className="space-y-2">
                           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">关键结论</p>
                           <ul className="space-y-1.5">
-                            {analysis.keyInsights.map((ins, i) => (
+                            {analysis.keyInsights?.map((ins, i) => (
                               <li key={i} className="text-sm flex items-start gap-2">
                                 <span className="text-primary mt-0.5">•</span>{ins}
                               </li>
@@ -1331,12 +1357,67 @@ export default function Solve() {
               </>
             )}
           </div>
-          <DialogFooter className="gap-2 flex-row justify-end">
-            <Button variant="outline" className="flex-1 h-11" onClick={() => setPropOpen(false)}>取消</Button>
-            <Button className="flex-1 h-11" onClick={() => {
-              setElements(prev => prev.map(e => e.id === editId ? { ...e, ...editProps } as CanvasEl : e));
-              setPropOpen(false);
-            }}>保存</Button>
+          <DialogFooter className="gap-2 flex-col sm:flex-row">
+            {(() => {
+              const isDemoLocked = !!tourStep && editId === "demo-r1";
+              return (
+                <Button
+                  variant="destructive"
+                  className="h-11 sm:mr-auto w-full sm:w-auto gap-2"
+                  disabled={isDemoLocked}
+                  title={isDemoLocked ? "教学引导中不可删除" : undefined}
+                  onClick={() => setDeleteConfirmOpen(true)}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  删除元件
+                </Button>
+              );
+            })()}
+            <div className="flex gap-2 w-full sm:w-auto">
+              <Button variant="outline" className="flex-1 sm:flex-none h-11" onClick={() => setPropOpen(false)}>取消</Button>
+              <Button className="flex-1 sm:flex-none h-11" onClick={() => {
+                setElements(prev => prev.map(e => e.id === editId ? { ...e, ...editProps } as CanvasEl : e));
+                setPropOpen(false);
+              }}>保存</Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── DELETE ELEMENT CONFIRM ── */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <DialogContent className="mx-4 rounded-2xl max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive text-base">
+              <AlertCircle className="w-5 h-5" />
+              确认删除元件
+            </DialogTitle>
+            <DialogDescription className="text-sm pt-1">
+              将从画布上移除元件{" "}
+              <span className="font-mono font-semibold text-foreground">
+                {editProps.label ?? editId}
+              </span>
+              {editProps.type ? `（${editProps.type}）` : ""}。关联的导线和节点会保留。删除后可以用顶部的"撤销"按钮恢复。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 flex-row">
+            <Button variant="outline" className="flex-1 h-11" onClick={() => setDeleteConfirmOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              className="flex-1 h-11"
+              onClick={() => {
+                const label = editProps.label ?? editId ?? "元件";
+                setElements(prev => prev.filter(e => e.id !== editId));
+                setDeleteConfirmOpen(false);
+                setPropOpen(false);
+                setEditId(null);
+                toast({ title: `已删除元件 ${label}`, duration: 2000 });
+              }}
+            >
+              确认删除
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
