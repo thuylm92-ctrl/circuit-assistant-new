@@ -428,8 +428,12 @@ function inferReferenceNode(els: CanvasEl[]): { nodeId: string; reason: string }
     };
   }
 
-  // Priority 2: union-find connected groups across all wires/elements; pick the
-  // group with the most members (≈ longest bus), then the node with greatest y.
+  // Priority 2: union-find connected groups using ONLY wires (zero-impedance
+  // connectors that genuinely make two endpoints the same electrical node).
+  // Components like resistors do not collapse their two endpoints into one
+  // node, so they must not participate in the union here. Component endpoints
+  // are still tracked (so they can be picked as the reference) but each one
+  // is its own singleton group unless joined via a wire.
   const parent = new Map<string, string>();
   const find = (x: string): string => {
     let cur = x;
@@ -450,7 +454,7 @@ function inferReferenceNode(els: CanvasEl[]): { nodeId: string; reason: string }
     const a = nid(el.start), b = nid(el.end);
     ensure(a); ensure(b);
     ptOf.set(a, el.start); ptOf.set(b, el.end);
-    union(a, b);
+    if (el.type === "wire") union(a, b);
   }
   const groups = new Map<string, string[]>();
   for (const id of parent.keys()) {

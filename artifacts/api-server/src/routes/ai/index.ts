@@ -234,6 +234,20 @@ router.post("/ai/analyze", async (req, res): Promise<void> => {
   const nodeIds = solution.nodeVoltages.map((n) => n.nodeId).join(", ");
   const elementIds = solution.branchCurrents.map((b) => b.elementId).join(", ");
 
+  // Defensively normalise unknownElements: optional array of strings from the
+  // client; we don't validate request bodies at runtime here, so a malformed
+  // payload (non-array, non-string entries, or huge list) shouldn't crash
+  // this handler. Cap to 32 entries to keep prompt budget bounded.
+  const safeUnknown = Array.isArray(unknownElements)
+    ? unknownElements
+        .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+        .slice(0, 32)
+    : [];
+
+  const unknownGuidance = safeUnknown.length > 0
+    ? `\n\n9. **待定参数处理**：以下元件的数值题目未给出（标记为待定）：${safeUnknown.join("、")}。请在解释里把它们当作未知量（用其 label 作为符号，如 R、V、I 等）参与推导，公式、算式、解答均使用符号表达式。computedAnswers 字段仍按上面"电路描述"里给出的占位数值计算（这是为了与权威求解器比对，不是题目要求的最终答案）；请在 summary 与每一步的 explanation 里明确说明哪些数值是占位假设、最终的符号化结果应当如何随这些待定参数变化。`
+    : "";
+
   const systemPrompt = `你是一位专业的电路分析教师，正在独立分析并向大学生解释电路题目的解题过程。
 
 重要原则：
@@ -264,23 +278,10 @@ router.post("/ai/analyze", async (req, res): Promise<void> => {
   }
 }
 
-只返回JSON，不要有其他文字。`;
-
-  // Defensively normalise unknownElements: it's an optional array of strings
-  // from the client, but we don't validate request bodies at runtime here, so
-  // a malformed payload (non-array, non-string entries, or huge list) shouldn't
-  // crash this handler. Cap to 32 entries to keep the prompt budget bounded.
-  const safeUnknown = Array.isArray(unknownElements)
-    ? unknownElements
-        .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
-        .slice(0, 32)
-    : [];
-  const unknownNote = safeUnknown.length > 0
-    ? `\n\n以下元件的数值题目未给出（标记为待定）：${safeUnknown.join("、")}。请在解释里把它们当作未知量（用其 label 作为符号，如 R、V、I 等）参与推导，公式、算式、解答均使用符号表达式。computedAnswers 字段仍按上述电路描述里给出的数值计算（这是为了与权威求解器比对，不是题目要求的最终答案）；请在 summary 与每一步的 explanation 里明确说明哪些数值是占位假设、最终的符号化结果应当如何随这些待定参数变化。`
-    : "";
+只返回JSON，不要有其他文字。${unknownGuidance}`;
 
   const baseUserMessage = `${problemText ? `题目要求：\n${problemText}\n\n` : ""}电路描述：
-${circuitDesc}${unknownNote}
+${circuitDesc}
 
 请独立完成解题，给出清晰的分步推导过程，并在 computedAnswers 字段里给出你算得的所有节点电压和支路电流。`;
 
