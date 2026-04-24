@@ -1,5 +1,11 @@
 import { Router, type IRouter } from "express";
 import { openai } from "@workspace/integrations-openai-ai-server";
+import {
+  solveCircuit as runMnaSolver,
+  type CircuitElement as MnaCircuitElement,
+  type CircuitInput as MnaCircuitInput,
+  type CircuitSolution as MnaCircuitSolution,
+} from "../../lib/mna-solver";
 
 const router: IRouter = Router();
 
@@ -388,6 +394,435 @@ ${lastMismatches.map((m) => `- ${m}`).join("\n")}
   } catch (err) {
     req.log.error({ err }, "Failed to analyze circuit");
     res.status(500).json({ error: "AI分析服务暂时不可用，请稍后再试。" });
+  }
+});
+
+// ─── /ai/solve-unknowns ─────────────────────────────────────────────────────
+// Given a circuit with one or more elements marked "待定" (unknown) plus a list
+// of user-written target constraints (e.g. "V(n1) = 5V"), ask the AI to write
+// the MNA equations symbolically and return numeric values for every unknown
+// that simultaneously satisfy the constraints. We then verify by substituting
+// those values into the circuit and re-running our authoritative MNA solver:
+// if any parsed constraint disagrees with the verified solution, we feed the
+// mismatches back to the AI and retry up to MAX_SOLVE_ATTEMPTS times.
+
+interface UnknownElementSpec {
+  elementId: string;
+  label: string;
+  type: string;
+  unit?: string;
+}
+
+interface UnknownValue {
+  elementId: string;
+  label: string;
+  value: number;
+  valueImag?: number;
+  unit: string;
+  displayValue?: string;
+}
+
+interface SolveUnknownsAIOutput {
+  unknownValues?: Array<Partial<UnknownValue>>;
+  reasoning?: string;
+}
+
+const MAX_SOLVE_ATTEMPTS = 3;
+const SOLVE_TOL_REL = 0.01; // 1 % relative tolerance
+const SOLVE_TOL_ABS = 1e-3;
+
+// Parse the most common student-written constraint forms. Anything we can't
+// parse is reported back to the client so the user knows it wasn't enforced.
+//
+// Supported forms (whitespace tolerant, case-insensitive):
+//   V(<node>) = <number>[unit]
+//   V(<node1>, <node2>) = <number>[unit]
+//   V<node> = <number>[unit]
+//   I(<elementLabelOrId>) = <number>[unit]
+//   I<elementLabelOrId> = <number>[unit]
+//
+// Returns either a parsed constraint object or null if the line couldn't be
+// recognised (the caller will record it in `unverifiedConstraints`).
+type ParsedConstraint =
+  | { kind: "V_node"; node: string; value: number; raw: string }
+  | { kind: "V_diff"; nodeA: string; nodeB: string; value: number; raw: string }
+  | { kind: "I_branch"; element: string; value: number; raw: string };
+
+// Convert "200mA" → 0.2, "2.5kV" → 2500, "10" → 10. We strip a trailing base
+// unit letter (V/A/Ω/Ohm/W/F/H/Hz) if present, then look for an SI prefix
+// just before it. Anything we don't recognise is silently treated as the
+// base unit so users can still type bare numbers.
+const SI_PREFIX: Record<string, number> = {
+  T: 1e12, G: 1e9, M: 1e6, k: 1e3, h: 1e2,
+  d: 1e-1, c: 1e-2, m: 1e-3, u: 1e-6, µ: 1e-6, μ: 1e-6,
+  n: 1e-9, p: 1e-12, f: 1e-15,
+};
+function parseSiNumber(raw: string): number {
+  const trimmed = raw.trim();
+  // Strip a trailing base unit token if present (case-insensitive on the unit
+  // body itself but not on the SI prefix — "mA" vs "MA" matters).
+  const unitMatch = trimmed.match(/^(.*?)([TGMkhdcmuµμnpf])?(V|A|Ω|Ohm|ohm|W|F|H|Hz|s)?\s*$/);
+  if (!unitMatch) return Number(trimmed);
+  const numericPart = unitMatch[1].trim();
+  const prefix = unitMatch[2];
+  const n = Number(numericPart);
+  if (!Number.isFinite(n)) return NaN;
+  if (!prefix) return n;
+  const mult = SI_PREFIX[prefix];
+  return mult ? n * mult : n;
+}
+
+function parseConstraint(raw: string): ParsedConstraint | null {
+  const line = raw.trim().replace(/[；;]+$/, "");
+  if (!line) return null;
+  // Capture the entire RHS (number + optional SI prefix + optional unit) as
+  // one chunk so we can hand it to parseSiNumber for proper SI handling.
+  const rhsRe = "([-+]?\\d+(?:\\.\\d+)?(?:[eE][+\\-]?\\d+)?\\s*[a-zA-ZΩµμ]*)";
+
+  // V(a, b) = X
+  let m = line.match(new RegExp(`^[Vv]\\s*\\(\\s*([\\w.,_\\-]+?)\\s*,\\s*([\\w.,_\\-]+?)\\s*\\)\\s*=\\s*${rhsRe}`));
+  if (m) {
+    const v = parseSiNumber(m[3]);
+    if (Number.isFinite(v)) return { kind: "V_diff", nodeA: m[1], nodeB: m[2], value: v, raw };
+  }
+  // V(a) = X
+  m = line.match(new RegExp(`^[Vv]\\s*\\(\\s*([\\w.,_\\-]+?)\\s*\\)\\s*=\\s*${rhsRe}`));
+  if (m) {
+    const v = parseSiNumber(m[2]);
+    if (Number.isFinite(v)) return { kind: "V_node", node: m[1], value: v, raw };
+  }
+  // V<a> = X (no parens)
+  m = line.match(new RegExp(`^[Vv]([\\w.\\-]+)\\s*=\\s*${rhsRe}`));
+  if (m) {
+    const v = parseSiNumber(m[2]);
+    if (Number.isFinite(v)) return { kind: "V_node", node: m[1], value: v, raw };
+  }
+  // I(R1) = X
+  m = line.match(new RegExp(`^[Ii]\\s*\\(\\s*([\\w.\\-]+?)\\s*\\)\\s*=\\s*${rhsRe}`));
+  if (m) {
+    const v = parseSiNumber(m[2]);
+    if (Number.isFinite(v)) return { kind: "I_branch", element: m[1], value: v, raw };
+  }
+  // I<R1> = X
+  m = line.match(new RegExp(`^[Ii]([\\w.\\-]+)\\s*=\\s*${rhsRe}`));
+  if (m) {
+    const v = parseSiNumber(m[2]);
+    if (Number.isFinite(v)) return { kind: "I_branch", element: m[1], value: v, raw };
+  }
+  return null;
+}
+
+function compareScalarSolve(a: number, b: number): boolean {
+  const diff = Math.abs(a - b);
+  if (diff <= SOLVE_TOL_ABS) return true;
+  const denom = Math.max(Math.abs(b), SOLVE_TOL_ABS);
+  return diff / denom <= SOLVE_TOL_REL;
+}
+
+interface VerifyResult {
+  passed: boolean;
+  mismatches: string[];
+  unparseable: string[];
+  solverError?: string;
+}
+
+function verifyUnknownsAgainstConstraints(
+  proposed: UnknownValue[],
+  baseCircuit: MnaCircuitInput,
+  unknownIds: Set<string>,
+  constraints: string[],
+): VerifyResult {
+  // Substitute proposed values back into the circuit
+  const valueById = new Map(proposed.map((u) => [u.elementId, u.value]));
+  const subbed: MnaCircuitElement[] = baseCircuit.elements.map((el) => {
+    if (!unknownIds.has(el.id)) return el;
+    const v = valueById.get(el.id);
+    if (v === undefined || !Number.isFinite(v)) return el;
+    // Resistors/inductors must stay >0 for MNA stability
+    let safeValue = v;
+    if ((el.type === "resistor") && safeValue <= 0) safeValue = 1e-9;
+    return { ...el, value: safeValue };
+  });
+  const verifyCircuit: MnaCircuitInput = { ...baseCircuit, elements: subbed };
+
+  const sol = runMnaSolver(verifyCircuit);
+  if ("error" in sol) {
+    return { passed: false, mismatches: [], unparseable: [], solverError: sol.details ?? sol.error };
+  }
+  const solution = sol as MnaCircuitSolution;
+
+  // Build lookups
+  const voltOf = new Map<string, number>();
+  voltOf.set("0", 0);
+  for (const nv of solution.nodeVoltages) voltOf.set(nv.nodeId, nv.voltage);
+  const currOf = new Map<string, number>();
+  for (const bc of solution.branchCurrents) {
+    currOf.set(bc.elementId, bc.current);
+    // Also index by element label if available (lets users write I(R1) instead of an internal id)
+    const matchingEl = verifyCircuit.elements.find((e) => e.id === bc.elementId);
+    if (matchingEl?.label) currOf.set(matchingEl.label, bc.current);
+  }
+
+  const mismatches: string[] = [];
+  const unparseable: string[] = [];
+  for (const raw of constraints) {
+    const parsed = parseConstraint(raw);
+    if (!parsed) { unparseable.push(raw); continue; }
+    if (parsed.kind === "V_node") {
+      const v = voltOf.get(parsed.node);
+      if (v === undefined) {
+        unparseable.push(`${raw}（找不到节点 ${parsed.node}）`);
+        continue;
+      }
+      if (!compareScalarSolve(v, parsed.value)) {
+        mismatches.push(`约束 "${raw}"：代入你给的待定参数后实际 V(${parsed.node}) = ${v.toFixed(4)}，目标值 = ${parsed.value}`);
+      }
+    } else if (parsed.kind === "V_diff") {
+      const va = voltOf.get(parsed.nodeA);
+      const vb = voltOf.get(parsed.nodeB);
+      if (va === undefined || vb === undefined) {
+        unparseable.push(`${raw}（找不到节点 ${parsed.nodeA} 或 ${parsed.nodeB}）`);
+        continue;
+      }
+      const diff = va - vb;
+      if (!compareScalarSolve(diff, parsed.value)) {
+        mismatches.push(`约束 "${raw}"：代入你给的待定参数后实际 V(${parsed.nodeA})-V(${parsed.nodeB}) = ${diff.toFixed(4)}，目标值 = ${parsed.value}`);
+      }
+    } else {
+      const i = currOf.get(parsed.element);
+      if (i === undefined) {
+        unparseable.push(`${raw}（找不到元件 ${parsed.element}）`);
+        continue;
+      }
+      if (!compareScalarSolve(i, parsed.value)) {
+        mismatches.push(`约束 "${raw}"：代入你给的待定参数后实际 I(${parsed.element}) = ${i.toFixed(4)}，目标值 = ${parsed.value}`);
+      }
+    }
+  }
+  // Treat unparseable constraints as a verification failure too: if we cannot
+  // mechanically check a constraint, we must not advertise the answer as
+  // "fully verified" — the caller still surfaces the AI numbers and the
+  // unparseable list to the student so they can fix the wording.
+  return {
+    passed: mismatches.length === 0 && unparseable.length === 0,
+    mismatches,
+    unparseable,
+  };
+}
+
+function formatDisplayValue(u: UnknownValue): string {
+  // Compact engineering-ish formatting: keep up to 4 significant digits, append unit
+  const v = u.value;
+  if (!Number.isFinite(v)) return `${v} ${u.unit}`;
+  const abs = Math.abs(v);
+  let s: string;
+  if (abs === 0) s = "0";
+  else if (abs >= 1000 || abs < 0.001) s = v.toExponential(3);
+  else s = Number(v.toPrecision(4)).toString();
+  return u.unit ? `${s} ${u.unit}` : s;
+}
+
+router.post("/ai/solve-unknowns", async (req, res): Promise<void> => {
+  const { circuit, unknownElements, constraints, problemText } = req.body as {
+    circuit?: MnaCircuitInput;
+    unknownElements?: UnknownElementSpec[];
+    constraints?: string[];
+    problemText?: string;
+  };
+
+  if (!circuit || !Array.isArray(circuit.elements) || !Array.isArray(circuit.nodes)) {
+    res.status(400).json({ error: "circuit (with elements and nodes) is required" });
+    return;
+  }
+  if (!Array.isArray(unknownElements) || unknownElements.length === 0) {
+    res.status(400).json({ error: "unknownElements must be a non-empty array" });
+    return;
+  }
+  if (!Array.isArray(constraints) || constraints.length === 0) {
+    res.status(400).json({ error: "constraints must be a non-empty array" });
+    return;
+  }
+
+  // Defensive caps: prevent prompt blow-ups from runaway client payloads.
+  const safeUnknowns = unknownElements
+    .filter((u): u is UnknownElementSpec =>
+      !!u && typeof u.elementId === "string" && typeof u.label === "string" && typeof u.type === "string",
+    )
+    .slice(0, 16);
+  const safeConstraints = constraints
+    .filter((c): c is string => typeof c === "string" && c.trim().length > 0)
+    .map((c) => c.trim())
+    .slice(0, 16);
+  if (safeUnknowns.length === 0 || safeConstraints.length === 0) {
+    res.status(400).json({ error: "At least one valid unknown element and one constraint are required" });
+    return;
+  }
+
+  const unknownIds = new Set(safeUnknowns.map((u) => u.elementId));
+
+  // Build a structured circuit description for the AI. Substituted placeholder
+  // values for unknowns are clearly flagged so the AI knows to ignore them.
+  const elementDesc = circuit.elements
+    .filter((e) => e.type !== "wire" && e.type !== "ground")
+    .map((e) => {
+      const isUnknown = unknownIds.has(e.id);
+      const label = e.label ?? e.id;
+      const valuePart = isUnknown
+        ? `值未知（请用符号 ${label} 表示）`
+        : `${e.value ?? "?"}${e.unit ?? ""}`;
+      return `- ${label}（${e.type}, id=${e.id}）: ${valuePart}, 节点${e.nodeFrom} → 节点${e.nodeTo}`;
+    })
+    .join("\n");
+
+  const groundDesc = circuit.elements.some((e) => e.type === "ground")
+    ? `电路含显式接地元件，参考节点为 0。`
+    : `参考节点为 0。`;
+
+  const unknownList = safeUnknowns
+    .map((u) => `${u.label}（id=${u.elementId}, type=${u.type}${u.unit ? `, 单位 ${u.unit}` : ""}）`)
+    .join("\n- ");
+
+  const constraintList = safeConstraints.map((c, i) => `${i + 1}. ${c}`).join("\n");
+
+  const systemPrompt = `你是一位专业的电路分析教师。学生给你一个电路，里面有 ${safeUnknowns.length} 个待定参数（每个参数都标注了符号 label）以及 ${safeConstraints.length} 个目标约束。
+你的任务：
+1. 把每个待定参数当作未知数（使用提供的 label 作为变量名）。
+2. 用 KCL/KVL/MNA 方程把电路写成代数方程组。
+3. 把目标约束（例如 V(n1)=5、I(R3)=0.2 等）作为额外方程加入方程组。
+4. 联立解出每个待定参数的数值。如果方程组有唯一解，给出该解；如果存在自由度，挑选一个使所有约束都成立的合理正实数解（并在 reasoning 里说明）。
+5. 检查：把你解出的数值代回电路，KCL/KVL 必须自洽，且每个目标约束都要满足。
+
+返回一个 JSON 对象（且仅返回 JSON，不要任何其他文字）：
+{
+  "unknownValues": [
+    { "elementId": "<原始 id>", "label": "<原始 label>", "value": <数值>, "unit": "<单位>" }
+  ],
+  "reasoning": "用一两句话说明解题思路与求得的关键方程"
+}
+
+约束细节：
+- value 必须是有限实数。${circuit.analysisType === "ac" ? "AC 分析时可附加 valueImag 表示虚部。" : ""}
+- 单位约定：电阻 Ω，电容 F，电感 H，电压 V，电流 A。
+- 物理合理性：电阻、电感、电容数值必须 > 0。
+- 你必须为列表中的每一个待定参数都返回一个 value，elementId 与请求中的完全一致。`;
+
+  const baseUserMessage = `电路结构：
+${elementDesc}
+
+${groundDesc}
+
+待定参数（共 ${safeUnknowns.length} 个）：
+- ${unknownList}
+
+学生给出的目标约束（共 ${safeConstraints.length} 个）：
+${constraintList}
+
+${problemText ? `题目原文：\n${problemText}\n\n` : ""}请按上面的要求联立求解，并以 JSON 形式返回每个待定参数的具体数值。`;
+
+  try {
+    let lastParsed: SolveUnknownsAIOutput = {};
+    let lastValues: UnknownValue[] = [];
+    let lastVerify: VerifyResult = { passed: false, mismatches: [], unparseable: [] };
+    let attempts = 0;
+    let verified = false;
+
+    for (attempts = 1; attempts <= MAX_SOLVE_ATTEMPTS; attempts++) {
+      const messages: { role: "system" | "user"; content: string }[] = [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: baseUserMessage },
+      ];
+
+      if (attempts > 1) {
+        const feedbackParts: string[] = [];
+        if (lastVerify.solverError) {
+          feedbackParts.push(`代入你上次给的数值后 MNA 求解器报错：${lastVerify.solverError}。请检查参数是否物理合理（电阻必须 > 0 等），重新求解。`);
+        }
+        if (lastVerify.mismatches.length > 0) {
+          feedbackParts.push(`代入你上次给的数值后，下列约束没有满足：\n${lastVerify.mismatches.map((m) => `- ${m}`).join("\n")}\n请重新解方程组。`);
+        }
+        if (feedbackParts.length === 0) {
+          feedbackParts.push(`你上次的输出无法被解析为有效 JSON，或缺少必要字段。请严格按照系统提示的 JSON 结构重新输出。`);
+        }
+        messages.push({
+          role: "user",
+          content: `这是第 ${attempts}/${MAX_SOLVE_ATTEMPTS} 次尝试。\n${feedbackParts.join("\n\n")}\n\n请重新输出完整 JSON。`,
+        });
+      }
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-5.2",
+        max_completion_tokens: 3072,
+        messages,
+      });
+
+      const content = response.choices[0]?.message?.content ?? "{}";
+      try {
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        lastParsed = jsonMatch ? (JSON.parse(jsonMatch[0]) as SolveUnknownsAIOutput) : {};
+      } catch {
+        lastParsed = {};
+      }
+
+      // Coerce each AI value into our typed shape, falling back to spec metadata
+      // so a missing label/unit doesn't lose the row.
+      const specById = new Map(safeUnknowns.map((u) => [u.elementId, u]));
+      const seen = new Set<string>();
+      lastValues = [];
+      for (const raw of lastParsed.unknownValues ?? []) {
+        const id = typeof raw?.elementId === "string" ? raw.elementId : "";
+        const spec = specById.get(id);
+        if (!spec || seen.has(id)) continue;
+        const v = Number(raw?.value);
+        if (!Number.isFinite(v)) continue;
+        seen.add(id);
+        const u: UnknownValue = {
+          elementId: id,
+          label: typeof raw.label === "string" && raw.label ? raw.label : spec.label,
+          value: v,
+          ...(typeof raw.valueImag === "number" && Number.isFinite(raw.valueImag) ? { valueImag: raw.valueImag } : {}),
+          unit: typeof raw.unit === "string" && raw.unit ? raw.unit : (spec.unit ?? ""),
+        };
+        u.displayValue = typeof raw.displayValue === "string" && raw.displayValue ? raw.displayValue : formatDisplayValue(u);
+        lastValues.push(u);
+      }
+
+      // If the AI returned values for every unknown, run verification.
+      const allCovered = safeUnknowns.every((u) => seen.has(u.elementId));
+      if (!allCovered) {
+        lastVerify = { passed: false, mismatches: [`AI 未能为全部 ${safeUnknowns.length} 个待定参数返回数值（仅 ${seen.size} 个）`], unparseable: [] };
+        continue;
+      }
+      lastVerify = verifyUnknownsAgainstConstraints(lastValues, circuit, unknownIds, safeConstraints);
+      if (lastVerify.passed && !lastVerify.solverError) {
+        verified = true;
+        break;
+      }
+    }
+
+    let verificationNote: string | undefined;
+    if (!verified) {
+      if (lastValues.length === 0) {
+        verificationNote = `AI 经过 ${MAX_SOLVE_ATTEMPTS} 次尝试未能给出有效的待定参数解。请检查约束格式或题目描述。`;
+      } else {
+        const detailParts: string[] = [];
+        if (lastVerify.solverError) detailParts.push(`求解器错误：${lastVerify.solverError}`);
+        if (lastVerify.mismatches.length > 0) detailParts.push(lastVerify.mismatches[0]);
+        verificationNote = `AI 经过 ${MAX_SOLVE_ATTEMPTS} 次尝试仍未完全满足全部约束（${detailParts.join("；")}）。下方数值仅供参考，请人工复核。`;
+        req.log.warn({ mismatches: lastVerify.mismatches, attempts }, "solve-unknowns verification failed");
+      }
+    }
+
+    res.json({
+      unknownValues: lastValues,
+      reasoning: lastParsed.reasoning ?? "",
+      verified,
+      verificationAttempts: attempts > MAX_SOLVE_ATTEMPTS ? MAX_SOLVE_ATTEMPTS : attempts,
+      ...(verificationNote ? { verificationNote } : {}),
+      ...(lastVerify.unparseable.length > 0 ? { unverifiedConstraints: lastVerify.unparseable } : {}),
+    });
+  } catch (err) {
+    req.log.error({ err }, "Failed to solve unknowns");
+    res.status(500).json({ error: "AI 求解服务暂时不可用，请稍后再试。" });
   }
 });
 

@@ -329,6 +329,148 @@ export const ExtractProblemResponse = zod.object({
 });
 
 /**
+ * Given a circuit where one or more components are marked as unknown ("待定"),
+plus a list of user-provided target constraints (e.g. "V(n1) = 5V",
+"I(R3) = 0.2A"), the AI symbolically writes the MNA equations and solves
+for numeric values of every unknown so that all constraints are satisfied
+simultaneously. The proposed values are then verified by re-running the
+MNA solver and re-checking the constraints; if verification fails the AI
+is asked to retry up to 3 times.
+
+ * @summary Solve for multiple unknown circuit parameters subject to user constraints
+ */
+export const solveUnknownsBodyCircuitAnalysisTypeDefault = `dc`;
+
+export const SolveUnknownsBody = zod.object({
+  circuit: zod
+    .object({
+      elements: zod.array(
+        zod.object({
+          id: zod.string(),
+          type: zod.enum([
+            "resistor",
+            "capacitor",
+            "inductor",
+            "voltage_source",
+            "current_source",
+            "vcvs",
+            "vccs",
+            "ccvs",
+            "cccs",
+            "wire",
+            "ground",
+            "opamp",
+          ]),
+          nodeFrom: zod.string(),
+          nodeTo: zod.string(),
+          value: zod.number().optional(),
+          unit: zod.string().optional(),
+          label: zod.string().optional(),
+          frequency: zod
+            .number()
+            .optional()
+            .describe("Frequency in Hz for AC analysis"),
+          controlBranchId: zod
+            .string()
+            .optional()
+            .describe("For controlled sources, the branch being sensed"),
+          gain: zod
+            .number()
+            .optional()
+            .describe("For controlled sources, the gain factor"),
+        }),
+      ),
+      nodes: zod.array(
+        zod.object({
+          id: zod.string(),
+          label: zod.string().optional(),
+        }),
+      ),
+      analysisType: zod
+        .enum(["dc", "ac"])
+        .default(solveUnknownsBodyCircuitAnalysisTypeDefault),
+      frequency: zod
+        .number()
+        .optional()
+        .describe("Frequency in Hz for AC analysis"),
+    })
+    .describe(
+      "The circuit input. Unknown elements should already have been\nsubstituted with safe placeholder values so the input is valid for\nthe MNA solver during verification.\n",
+    ),
+  unknownElements: zod
+    .array(
+      zod
+        .object({
+          elementId: zod.string(),
+          label: zod.string(),
+          type: zod.string(),
+          unit: zod.string().optional(),
+        })
+        .describe(
+          'Metadata describing one element marked as \"待定\" by the user.',
+        ),
+    )
+    .describe("Per-unknown metadata so the AI can name each variable."),
+  constraints: zod
+    .array(zod.string())
+    .describe(
+      'Free-form target constraints written by the student, e.g.\n\"V(n1) = 5\", \"V(n1, n2) = 12V\", \"I(R3) = 0.2A\". Each entry is one\nconstraint.\n',
+    ),
+  problemText: zod
+    .string()
+    .optional()
+    .describe("Optional original problem statement for additional context."),
+});
+
+export const SolveUnknownsResponse = zod.object({
+  unknownValues: zod.array(
+    zod
+      .object({
+        elementId: zod.string(),
+        label: zod.string(),
+        value: zod.number(),
+        valueImag: zod
+          .number()
+          .optional()
+          .describe("Imaginary part for AC analysis (phasor)"),
+        unit: zod.string(),
+        displayValue: zod
+          .string()
+          .optional()
+          .describe(
+            'Human-friendly formatted value (e.g. \"10 Ω\", \"5∠30° V\")',
+          ),
+      })
+      .describe("One solved unknown parameter."),
+  ),
+  reasoning: zod
+    .string()
+    .optional()
+    .describe(
+      "Short natural-language explanation of how the system was solved.",
+    ),
+  verified: zod
+    .boolean()
+    .optional()
+    .describe(
+      "True if substituting the AI's values made all parsed constraints hold within tolerance.",
+    ),
+  verificationAttempts: zod.number().optional(),
+  verificationNote: zod
+    .string()
+    .optional()
+    .describe(
+      "Optional message shown to the user when verification could not be completed.",
+    ),
+  unverifiedConstraints: zod
+    .array(zod.string())
+    .optional()
+    .describe(
+      "Constraints that the verifier could not parse \/ interpret automatically.",
+    ),
+});
+
+/**
  * Ask follow-up questions about the circuit solution
  * @summary Interactive Q&A about the circuit solution
  */

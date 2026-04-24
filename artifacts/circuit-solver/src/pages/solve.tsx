@@ -23,6 +23,7 @@ import {
 import {
   useSolveCircuit, useAnalyzeCircuit,
   useExtractProblem, useChatWithAI,
+  useSolveUnknowns,
 } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
@@ -592,6 +593,32 @@ export default function Solve() {
   // to show a hint on the results page so students know the AI is reasoning
   // symbolically over those parameters.
   const [unknownInLastSolve, setUnknownInLastSolve] = useState<string[]>([]);
+  // Free-text target constraints (one per line) the student wants the system to
+  // satisfy when solving for待定 parameters. Examples:
+  //   V(n1) = 5V
+  //   V(n1, n2) = 12
+  //   I(R3) = 0.2A
+  // Sent to /ai/solve-unknowns alongside the placeholder-substituted circuit.
+  const [targetConstraints, setTargetConstraints] = useState<string>("");
+  // Solved values for待定 parameters from the most recent submission, used to
+  // render the "待定参数解" table on the results page and to flag verification
+  // issues to the student.
+  const [unknownSolution, setUnknownSolution] = useState<{
+    values: Array<{ elementId: string; label: string; value: number; valueImag?: number; unit: string; displayValue?: string }>;
+    reasoning?: string;
+    verified?: boolean;
+    verificationAttempts?: number;
+    verificationNote?: string;
+    unverifiedConstraints?: string[];
+    constraints: string[];
+    // True only when every待定 element from the request received a finite
+    // numeric value AND those values were substituted into the circuit before
+    // the deterministic MNA re-solve. The results-page hint about "联立求解"
+    // is gated on this so we never claim success when the AI returned partial
+    // or pathological values.
+    appliedAll: boolean;
+    requestedUnknownCount: number;
+  } | null>(null);
 
   // ── Chat
   const [chatMsgs, setChatMsgs] = useState<{ role: string; content: string }[]>([]);
@@ -605,6 +632,7 @@ export default function Solve() {
   const extractProblem  = useExtractProblem();
   const solveCircuit    = useSolveCircuit();
   const analyzeCircuit  = useAnalyzeCircuit();
+  const solveUnknowns   = useSolveUnknowns();
   const chatWithAI      = useChatWithAI();
 
   // ── Tour (only starts after upload gate is dismissed)
@@ -677,6 +705,7 @@ export default function Solve() {
     const nodes = Array.from(new Set(rawNodeIds.map(remap))).map((id) => ({ id }));
 
     const unknownLabels: string[] = [];
+    const unknownSpecs: Array<{ elementId: string; label: string; type: string; unit?: string }> = [];
     const outElements = elements.map((e) => {
       const from = remap(`${e.start.x},${e.start.y}`);
       const to = e.type === "ground" ? "0" : remap(`${e.end.x},${e.end.y}`);
@@ -686,7 +715,9 @@ export default function Solve() {
         const ph = placeholderForUnknown(e.type);
         value = ph.value;
         unit = unit ?? ph.unit;
-        unknownLabels.push(e.label ?? e.id);
+        const lbl = e.label ?? e.id;
+        unknownLabels.push(lbl);
+        unknownSpecs.push({ elementId: e.id, label: lbl, type: e.type, unit });
       }
       return {
         id: e.id, type: e.type,
@@ -706,6 +737,7 @@ export default function Solve() {
       },
       autoReference: inferred,
       unknownLabels,
+      unknownSpecs,
     };
   };
 
@@ -921,16 +953,79 @@ export default function Solve() {
     // tab never displays the prior solution's "待定" labels alongside this run's
     // numbers (matches what the user just clicked solve for).
     setAnalysis(null);
-    const { input, unknownLabels } = buildCircuitInput();
+    setUnknownSolution(null);
+    const { input, unknownLabels, unknownSpecs } = buildCircuitInput();
     setUnknownInLastSolve(unknownLabels);
+
+    // If the student marked elements as 待定 AND wrote at least one constraint,
+    // first ask the AI to solve the simultaneous system and return numeric
+    // values for every unknown. We then substitute those values into the
+    // circuit before running the deterministic MNA solver, so the rest of the
+    // pipeline (results table + analysis) reflects the constraint-satisfying
+    // operating point rather than the safe placeholder values.
+    const constraintLines = targetConstraints
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    let workingInput = input;
+    let solvedUnknowns: typeof unknownSolution = null;
+    if (unknownSpecs.length > 0 && constraintLines.length > 0) {
+      try {
+        const result = await solveUnknowns.mutateAsync({
+          data: {
+            circuit: input,
+            unknownElements: unknownSpecs,
+            constraints: constraintLines,
+            problemText: problemExtracted?.problemText,
+          },
+        });
+        const values = result.unknownValues ?? [];
+        const valueById = new Map(values.map((v) => [v.elementId, v]));
+        const appliedIds = new Set<string>();
+        workingInput = {
+          ...input,
+          elements: input.elements.map((e) => {
+            const v = valueById.get(e.id);
+            if (!v || !Number.isFinite(v.value)) return e;
+            // Resistor must be > 0 — if the AI returned something pathological
+            // we keep the placeholder so MNA can still factor the matrix and
+            // the verification note will warn the student. We do NOT mark
+            // such elements as "applied" so the hint text won't claim a full
+            // simultaneous solve.
+            if (e.type === "resistor" && v.value <= 0) return e;
+            appliedIds.add(e.id);
+            return { ...e, value: v.value };
+          }),
+        };
+        const appliedAll = unknownSpecs.every((s) => appliedIds.has(s.elementId));
+        solvedUnknowns = {
+          values,
+          reasoning: result.reasoning,
+          verified: result.verified,
+          verificationAttempts: result.verificationAttempts,
+          verificationNote: result.verificationNote,
+          unverifiedConstraints: result.unverifiedConstraints,
+          constraints: constraintLines,
+          appliedAll,
+          requestedUnknownCount: unknownSpecs.length,
+        };
+        setUnknownSolution(solvedUnknowns);
+      } catch (err: unknown) {
+        const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+          ?? "AI 暂时无法联立求解待定参数，将以占位值继续求解。";
+        toast({ title: "联立求解未完成", description: msg, variant: "destructive" });
+        // Fall through: still run normal MNA on the placeholder values.
+      }
+    }
+
     try {
-      const sol = await solveCircuit.mutateAsync({ data: input });
+      const sol = await solveCircuit.mutateAsync({ data: workingInput });
       setSolution(sol);
       toast({ title: "求解完成", description: "正在生成 AI 解析..." });
       setTab("results");
       const ana = await analyzeCircuit.mutateAsync({
         data: {
-          circuit: input,
+          circuit: workingInput,
           solution: sol,
           problemText: problemExtracted?.problemText,
           ...(unknownLabels.length > 0 ? { unknownElements: unknownLabels } : {}),
@@ -972,7 +1067,7 @@ export default function Solve() {
     } catch { toast({ title: "错误", description: "发送失败", variant: "destructive" }); }
   };
 
-  const isLoading = solveCircuit.isPending || analyzeCircuit.isPending;
+  const isLoading = solveCircuit.isPending || analyzeCircuit.isPending || solveUnknowns.isPending;
   const isTourDemo = tourStep === "canvas-demo";
 
   // Dismiss gate and proceed to canvas
@@ -1340,8 +1435,34 @@ export default function Solve() {
               )}
             </div>
 
-            {/* Bottom action bar — live validation status + solve button */}
+            {/* Bottom action bar — live validation status + constraints + solve */}
             <div className="shrink-0 bg-card border-t border-border">
+              {/* Target constraints — only useful when at least one element is待定.
+                  Each non-empty line is treated as one constraint. Verifier
+                  recognises V(node)=X, V(a,b)=X, I(elementLabel)=X. */}
+              {elements.some((e) => e.unknown) && (
+                <div className="px-3 py-2 border-b border-border space-y-1.5 bg-amber-500/5">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label htmlFor="target-constraints" className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+                      目标约束（每行一条，例如 V(n1)=5 或 I(R3)=0.2）
+                    </Label>
+                    <Badge variant="outline" className="text-[10px] font-mono border-amber-500/30 text-amber-700 dark:text-amber-400">
+                      {elements.filter((e) => e.unknown).length} 个待定
+                    </Badge>
+                  </div>
+                  <textarea
+                    id="target-constraints"
+                    data-testid="textarea-target-constraints"
+                    value={targetConstraints}
+                    onChange={(e) => setTargetConstraints(e.target.value)}
+                    placeholder={`V(n1) = 5\nI(R3) = 0.2`}
+                    className="w-full text-xs font-mono rounded-lg border border-amber-500/30 bg-card px-2.5 py-1.5 min-h-[60px] focus:outline-none focus:ring-2 focus:ring-amber-500/40 resize-y"
+                  />
+                  <p className="text-[10px] text-muted-foreground leading-relaxed">
+                    填写约束后，AI 将联立解出每个待定参数；不填则按占位值给出符号化解析。
+                  </p>
+                </div>
+              )}
               {/* Live validation status (auto-checks on every elements change) */}
               <div
                 data-testid="circuit-status"
@@ -1491,6 +1612,92 @@ export default function Solve() {
                       </table>
                     </div>
                   </div>
+                  {/* 待定参数解 — shown whenever the user submitted target
+                      constraints, even if the AI returned no usable values, so
+                      the verification note + unparseable list are still visible. */}
+                  {unknownSolution && (
+                    <div className="space-y-2" data-testid="unknown-solution-section">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-semibold">待定参数解</h3>
+                        <Badge variant="outline" className="text-xs font-mono">
+                          {unknownSolution.values.length}/{unknownSolution.requestedUnknownCount}
+                        </Badge>
+                        {unknownSolution.verified && unknownSolution.appliedAll && (
+                          <Badge className="text-[10px] bg-green-500/15 text-green-700 dark:text-green-400 border border-green-500/30">已校验</Badge>
+                        )}
+                        {!unknownSolution.appliedAll && (
+                          <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-700 dark:text-amber-400">部分未应用</Badge>
+                        )}
+                      </div>
+                      {unknownSolution.constraints.length > 0 && (
+                        <div className="rounded-lg bg-muted/30 border border-border px-3 py-2 text-xs text-muted-foreground">
+                          <p className="font-semibold text-foreground mb-1">约束条件</p>
+                          <ul className="space-y-0.5 font-mono">
+                            {unknownSolution.constraints.map((c, i) => (
+                              <li key={i}>· {c}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {unknownSolution.values.length > 0 ? (
+                        <div className="rounded-xl border border-border overflow-hidden">
+                          <table className="w-full text-sm">
+                            <thead className="bg-muted/50">
+                              <tr>
+                                <th className="px-3 py-2 text-left text-xs font-semibold text-muted-foreground">待定元件</th>
+                                <th className="px-3 py-2 text-right text-xs font-semibold text-muted-foreground">解出的数值</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border bg-card">
+                              {unknownSolution.values.map((u) => (
+                                <tr key={u.elementId}>
+                                  <td className="px-3 py-2.5 font-mono text-xs">{u.label}</td>
+                                  <td
+                                    className="px-3 py-2.5 text-right font-mono text-amber-700 dark:text-amber-400 font-semibold text-xs"
+                                    data-testid={`unknown-value-${u.label}`}
+                                  >
+                                    {u.displayValue ?? `${u.value} ${u.unit ?? ""}`.trim()}
+                                    {typeof u.valueImag === "number" && u.valueImag !== 0
+                                      ? ` (虚部 ${u.valueImag.toFixed(4)})`
+                                      : ""}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div
+                          data-testid="unknown-solution-empty"
+                          className="rounded-lg bg-muted/30 border border-border px-3 py-2.5 text-xs text-muted-foreground"
+                        >
+                          AI 暂未为待定参数返回可用数值，请查看下方说明并调整约束后重试。
+                        </div>
+                      )}
+                      {unknownSolution.reasoning && (
+                        <p className="text-xs text-muted-foreground leading-relaxed">{unknownSolution.reasoning}</p>
+                      )}
+                      {unknownSolution.verificationNote && (
+                        <div
+                          data-testid="unknown-solution-warning"
+                          className="rounded-lg bg-destructive/10 border border-destructive/30 px-3 py-2 text-xs text-destructive flex items-start gap-2"
+                        >
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                          <p className="flex-1">{unknownSolution.verificationNote}</p>
+                        </div>
+                      )}
+                      {unknownSolution.unverifiedConstraints && unknownSolution.unverifiedConstraints.length > 0 && (
+                        <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                          下列约束格式未被自动校验，建议改写为 V(节点)=数值 或 I(元件)=数值 形式：
+                          <ul className="mt-1 space-y-0.5 font-mono">
+                            {unknownSolution.unverifiedConstraints.map((c, i) => (
+                              <li key={i}>· {c}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {analyzeCircuit.isPending && (
                     <div className="rounded-xl border border-border bg-primary/5 p-4 flex items-center gap-3">
                       <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin shrink-0" />
@@ -1509,11 +1716,31 @@ export default function Solve() {
                           className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
                         >
                           {unknownInLastSolve.length > 0 ? (
-                            <p>
-                              本题包含 {unknownInLastSolve.length} 个待定参数（{unknownInLastSolve.join("、")}）。
-                              下方 AI 解析按 <span className="font-semibold">符号方式</span> 推导，
-                              上方"节点电压/支路电流"中的数字仅为基于占位值（电阻 1Ω、电源 1V/1A 等）的内部一致性参考，请以解析中的符号公式为最终答案。
-                            </p>
+                            unknownSolution && unknownSolution.appliedAll && unknownSolution.verified ? (
+                              <p>
+                                本题包含 {unknownInLastSolve.length} 个待定参数（{unknownInLastSolve.join("、")}），
+                                已根据目标约束联立求解并通过校验，上方"待定参数解"展示具体数值，
+                                下方解析与节点电压/支路电流均基于该解。
+                              </p>
+                            ) : unknownSolution && unknownSolution.appliedAll ? (
+                              <p>
+                                本题包含 {unknownInLastSolve.length} 个待定参数（{unknownInLastSolve.join("、")}），
+                                AI 已给出全部数值并代入电路，但部分约束未通过自动校验，
+                                请查看上方"待定参数解"中的说明。
+                              </p>
+                            ) : unknownSolution ? (
+                              <p>
+                                本题包含 {unknownInLastSolve.length} 个待定参数（{unknownInLastSolve.join("、")}），
+                                AI 仅给出部分待定参数的数值，未替换的元件仍按占位值参与计算，
+                                请查看上方"待定参数解"中的提示。
+                              </p>
+                            ) : (
+                              <p>
+                                本题包含 {unknownInLastSolve.length} 个待定参数（{unknownInLastSolve.join("、")}）。
+                                下方 AI 解析按 <span className="font-semibold">符号方式</span> 推导，
+                                上方"节点电压/支路电流"中的数字仅为基于占位值（电阻 1Ω、电源 1V/1A 等）的内部一致性参考，请以解析中的符号公式为最终答案。
+                              </p>
+                            )
                           ) : (
                             <p>
                               本题包含<span className="font-semibold">待定参数</span>。

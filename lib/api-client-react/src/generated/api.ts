@@ -27,6 +27,8 @@ import type {
   ExtractResult,
   HealthStatus,
   SolveError,
+  SolveUnknownsRequest,
+  SolveUnknownsResult,
   ValidationResult,
 } from "./api.schemas";
 
@@ -461,6 +463,100 @@ export const useExtractProblem = <
   TContext
 > => {
   return useMutation(getExtractProblemMutationOptions(options));
+};
+
+/**
+ * Given a circuit where one or more components are marked as unknown ("待定"),
+plus a list of user-provided target constraints (e.g. "V(n1) = 5V",
+"I(R3) = 0.2A"), the AI symbolically writes the MNA equations and solves
+for numeric values of every unknown so that all constraints are satisfied
+simultaneously. The proposed values are then verified by re-running the
+MNA solver and re-checking the constraints; if verification fails the AI
+is asked to retry up to 3 times.
+
+ * @summary Solve for multiple unknown circuit parameters subject to user constraints
+ */
+export const getSolveUnknownsUrl = () => {
+  return `/api/ai/solve-unknowns`;
+};
+
+export const solveUnknowns = async (
+  solveUnknownsRequest: SolveUnknownsRequest,
+  options?: RequestInit,
+): Promise<SolveUnknownsResult> => {
+  return customFetch<SolveUnknownsResult>(getSolveUnknownsUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(solveUnknownsRequest),
+  });
+};
+
+export const getSolveUnknownsMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof solveUnknowns>>,
+    TError,
+    { data: BodyType<SolveUnknownsRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof solveUnknowns>>,
+  TError,
+  { data: BodyType<SolveUnknownsRequest> },
+  TContext
+> => {
+  const mutationKey = ["solveUnknowns"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof solveUnknowns>>,
+    { data: BodyType<SolveUnknownsRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return solveUnknowns(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SolveUnknownsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof solveUnknowns>>
+>;
+export type SolveUnknownsMutationBody = BodyType<SolveUnknownsRequest>;
+export type SolveUnknownsMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Solve for multiple unknown circuit parameters subject to user constraints
+ */
+export const useSolveUnknowns = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof solveUnknowns>>,
+    TError,
+    { data: BodyType<SolveUnknownsRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof solveUnknowns>>,
+  TError,
+  { data: BodyType<SolveUnknownsRequest> },
+  TContext
+> => {
+  return useMutation(getSolveUnknownsMutationOptions(options));
 };
 
 /**

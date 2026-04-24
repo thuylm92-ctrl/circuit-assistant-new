@@ -170,6 +170,60 @@ export interface ExtractResult {
   confidence: number;
 }
 
+/**
+ * Metadata describing one element marked as "待定" by the user.
+ */
+export interface UnknownElementSpec {
+  elementId: string;
+  label: string;
+  type: string;
+  unit?: string;
+}
+
+/**
+ * One solved unknown parameter.
+ */
+export interface UnknownValue {
+  elementId: string;
+  label: string;
+  value: number;
+  /** Imaginary part for AC analysis (phasor) */
+  valueImag?: number;
+  unit: string;
+  /** Human-friendly formatted value (e.g. "10 Ω", "5∠30° V") */
+  displayValue?: string;
+}
+
+export interface SolveUnknownsRequest {
+  /** The circuit input. Unknown elements should already have been
+substituted with safe placeholder values so the input is valid for
+the MNA solver during verification.
+ */
+  circuit: CircuitInput;
+  /** Per-unknown metadata so the AI can name each variable. */
+  unknownElements: UnknownElementSpec[];
+  /** Free-form target constraints written by the student, e.g.
+"V(n1) = 5", "V(n1, n2) = 12V", "I(R3) = 0.2A". Each entry is one
+constraint.
+ */
+  constraints: string[];
+  /** Optional original problem statement for additional context. */
+  problemText?: string;
+}
+
+export interface SolveUnknownsResult {
+  unknownValues: UnknownValue[];
+  /** Short natural-language explanation of how the system was solved. */
+  reasoning?: string;
+  /** True if substituting the AI's values made all parsed constraints hold within tolerance. */
+  verified?: boolean;
+  verificationAttempts?: number;
+  /** Optional message shown to the user when verification could not be completed. */
+  verificationNote?: string;
+  /** Constraints that the verifier could not parse / interpret automatically. */
+  unverifiedConstraints?: string[];
+}
+
 export type ChatMessageRole =
   (typeof ChatMessageRole)[keyof typeof ChatMessageRole];
 

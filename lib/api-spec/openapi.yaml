@@ -115,6 +115,33 @@ paths:
               schema:
                 $ref: "#/components/schemas/ExtractResult"
 
+  /ai/solve-unknowns:
+    post:
+      operationId: solveUnknowns
+      tags: [ai]
+      summary: Solve for multiple unknown circuit parameters subject to user constraints
+      description: |
+        Given a circuit where one or more components are marked as unknown ("待定"),
+        plus a list of user-provided target constraints (e.g. "V(n1) = 5V",
+        "I(R3) = 0.2A"), the AI symbolically writes the MNA equations and solves
+        for numeric values of every unknown so that all constraints are satisfied
+        simultaneously. The proposed values are then verified by re-running the
+        MNA solver and re-checking the constraints; if verification fails the AI
+        is asked to retry up to 3 times.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SolveUnknownsRequest"
+      responses:
+        "200":
+          description: Unknown parameters solved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SolveUnknownsResult"
+
   /ai/chat:
     post:
       operationId: chatWithAI
@@ -430,6 +457,103 @@ components:
       required:
         - isCircuitRelated
         - confidence
+
+    UnknownElementSpec:
+      type: object
+      description: Metadata describing one element marked as "待定" by the user.
+      properties:
+        elementId:
+          type: string
+        label:
+          type: string
+        type:
+          type: string
+        unit:
+          type: string
+      required:
+        - elementId
+        - label
+        - type
+
+    UnknownValue:
+      type: object
+      description: One solved unknown parameter.
+      properties:
+        elementId:
+          type: string
+        label:
+          type: string
+        value:
+          type: number
+        valueImag:
+          type: number
+          description: Imaginary part for AC analysis (phasor)
+        unit:
+          type: string
+        displayValue:
+          type: string
+          description: Human-friendly formatted value (e.g. "10 Ω", "5∠30° V")
+      required:
+        - elementId
+        - label
+        - value
+        - unit
+
+    SolveUnknownsRequest:
+      type: object
+      properties:
+        circuit:
+          $ref: "#/components/schemas/CircuitInput"
+          description: |
+            The circuit input. Unknown elements should already have been
+            substituted with safe placeholder values so the input is valid for
+            the MNA solver during verification.
+        unknownElements:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnknownElementSpec"
+          description: Per-unknown metadata so the AI can name each variable.
+        constraints:
+          type: array
+          items:
+            type: string
+          description: |
+            Free-form target constraints written by the student, e.g.
+            "V(n1) = 5", "V(n1, n2) = 12V", "I(R3) = 0.2A". Each entry is one
+            constraint.
+        problemText:
+          type: string
+          description: Optional original problem statement for additional context.
+      required:
+        - circuit
+        - unknownElements
+        - constraints
+
+    SolveUnknownsResult:
+      type: object
+      properties:
+        unknownValues:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnknownValue"
+        reasoning:
+          type: string
+          description: Short natural-language explanation of how the system was solved.
+        verified:
+          type: boolean
+          description: True if substituting the AI's values made all parsed constraints hold within tolerance.
+        verificationAttempts:
+          type: integer
+        verificationNote:
+          type: string
+          description: Optional message shown to the user when verification could not be completed.
+        unverifiedConstraints:
+          type: array
+          items:
+            type: string
+          description: Constraints that the verifier could not parse / interpret automatically.
+      required:
+        - unknownValues
 
     ChatMessage:
       type: object
