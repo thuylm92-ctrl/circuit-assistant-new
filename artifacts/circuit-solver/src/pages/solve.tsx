@@ -8,11 +8,16 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Play, RotateCcw, Trash2, CheckCircle, Upload, Send, MessageSquare,
   AlertCircle, ImageIcon, Zap, BarChart2, MoreHorizontal, Settings2,
-  CheckCircle2, X, ShieldCheck, ShieldAlert,
+  CheckCircle2, X,
 } from "lucide-react";
 import {
   useSolveCircuit, useValidateCircuit, useAnalyzeCircuit,
@@ -56,6 +61,11 @@ const DEFAULT_UNIT: Record<string, string> = {
   resistor: "Ω", capacitor: "F", inductor: "H",
   voltage_source: "V", current_source: "A",
   vcvs: "V/V", vccs: "A/V", ccvs: "V/A", cccs: "A/A",
+};
+const TYPE_LABEL: Record<string, string> = {
+  wire: "导线", resistor: "电阻", capacitor: "电容", inductor: "电感",
+  voltage_source: "电压源", current_source: "电流源", ground: "接地",
+  vcvs: "压控电压源", vccs: "压控电流源", ccvs: "流控电压源", cccs: "流控电流源",
 };
 
 // Demo resistor positions for the tour animation
@@ -429,15 +439,32 @@ export default function Solve() {
 
   // ── Canvas
   const [elements, setElements] = useState<CanvasEl[]>([]);
+  const [history, setHistory] = useState<CanvasEl[][]>([]);
   const [selectedTool, setSelectedTool] = useState<ElementType | null>(null);
   const [drawingStart, setDrawingStart] = useState<Pt | null>(null);
   const [previewEnd, setPreviewEnd] = useState<Pt | null>(null);
   const [showMoreTools, setShowMoreTools] = useState(false);
 
+  // commitElements: snapshot current state into history then mutate.
+  // Used for every user-initiated mutation so undo can restore it
+  // (placement, edits, deletion, clear). Tour-driven changes bypass this.
+  const commitElements = (updater: (prev: CanvasEl[]) => CanvasEl[]) => {
+    setHistory(h => [...h, elements].slice(-50));
+    setElements(updater);
+  };
+  const undo = () => {
+    setHistory(h => {
+      if (!h.length) return h;
+      setElements(h[h.length - 1]);
+      return h.slice(0, -1);
+    });
+  };
+
   // ── Prop dialog
   const [propOpen, setPropOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [editProps, setEditProps] = useState<Partial<CanvasEl>>({});
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   // ── Analysis settings
   const [analysisType, setAnalysisType] = useState<"dc" | "ac">("dc");
@@ -451,15 +478,9 @@ export default function Solve() {
   } | null>(null);
   const [analysis, setAnalysis] = useState<{
     steps: { stepNumber: number; title: string; explanation: string; formula?: string }[];
-    summary: string; keyInsights?: string[];
-    verified?: boolean;
-    verificationAttempts?: number;
-    verificationNote?: string;
+    summary: string; keyInsights: string[];
   } | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
-
-  // ── Delete element confirmation
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   // ── Chat
   const [chatMsgs, setChatMsgs] = useState<{ role: string; content: string }[]>([]);
@@ -549,7 +570,7 @@ export default function Solve() {
     const pt = svgPt(clientX, clientY);
 
     if (selectedTool === "ground") {
-      setElements(prev => [...prev, {
+      commitElements(prev => [...prev, {
         id: Math.random().toString(36).slice(2), type: "ground",
         start: pt, end: { x: pt.x, y: pt.y + GRID }, label: "GND",
       }]);
@@ -567,7 +588,7 @@ export default function Solve() {
         value: 1, unit: DEFAULT_UNIT[selectedTool] ?? "",
         label: `${selectedTool[0].toUpperCase()}${elements.length + 1}`,
       };
-      setElements(prev => [...prev, newEl]);
+      commitElements(prev => [...prev, newEl]);
       setDrawingStart(null); setPreviewEnd(null);
       if (selectedTool !== "wire") {
         setEditId(newEl.id); setEditProps(newEl); setPropOpen(true);
@@ -949,12 +970,16 @@ export default function Solve() {
                       : "选择元件后点击画布绘制"}
                 </p>
                 <div className="flex items-center gap-1 shrink-0">
-                  <button onClick={() => setElements(prev => prev.slice(0, -1))}
-                    disabled={!elements.length || isTourDemo}
+                  <button onClick={undo}
+                    disabled={!history.length || isTourDemo}
                     className="h-7 px-2 text-xs rounded-md border border-border bg-card text-muted-foreground disabled:opacity-40 flex items-center gap-1 active:bg-muted">
                     <RotateCcw className="w-3 h-3" /> 撤销
                   </button>
-                  <button onClick={() => { setElements([]); setDrawingStart(null); }}
+                  <button onClick={() => {
+                    if (!elements.length) return;
+                    commitElements(() => []);
+                    setDrawingStart(null);
+                  }}
                     disabled={isTourDemo}
                     className="h-7 px-2 text-xs rounded-md border border-border bg-card text-muted-foreground flex items-center gap-1 active:bg-muted disabled:opacity-40">
                     <Trash2 className="w-3 h-3" /> 清空
@@ -1140,30 +1165,10 @@ export default function Solve() {
                   )}
                   {analysis && (
                     <div className="space-y-3">
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center justify-between">
                         <h3 className="text-sm font-semibold">AI 解析</h3>
-                        {analysis.verified ? (
-                          <Badge className="text-xs gap-1 bg-emerald-600 hover:bg-emerald-600 text-white">
-                            <ShieldCheck className="w-3 h-3" />
-                            已校验 · {analysis.verificationAttempts ?? 1}/3
-                          </Badge>
-                        ) : analysis.verified === false ? (
-                          <Badge variant="outline" className="text-xs gap-1 border-amber-500 text-amber-700 dark:text-amber-400">
-                            <ShieldAlert className="w-3 h-3" />
-                            未通过校验
-                          </Badge>
-                        ) : (
-                          <Badge className="text-xs">AI 生成</Badge>
-                        )}
+                        <Badge className="text-xs">AI 生成</Badge>
                       </div>
-                      {analysis.verified === false && analysis.verificationNote && (
-                        <div className="rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 p-3 flex items-start gap-2">
-                          <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                          <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
-                            {analysis.verificationNote}
-                          </p>
-                        </div>
-                      )}
                       <div className="text-sm text-muted-foreground bg-muted/30 p-4 rounded-xl border border-border leading-relaxed">
                         {analysis.summary}
                       </div>
@@ -1189,11 +1194,11 @@ export default function Solve() {
                           </AccordionItem>
                         ))}
                       </Accordion>
-                      {(analysis.keyInsights?.length ?? 0) > 0 && (
+                      {analysis.keyInsights.length > 0 && (
                         <div className="space-y-2">
                           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">关键结论</p>
                           <ul className="space-y-1.5">
-                            {analysis.keyInsights?.map((ins, i) => (
+                            {analysis.keyInsights.map((ins, i) => (
                               <li key={i} className="text-sm flex items-start gap-2">
                                 <span className="text-primary mt-0.5">•</span>{ins}
                               </li>
@@ -1357,26 +1362,37 @@ export default function Solve() {
               </>
             )}
           </div>
-          <DialogFooter className="gap-2 flex-col sm:flex-row">
+          <DialogFooter className="gap-2 flex-row items-center justify-between sm:justify-between">
             {(() => {
-              const isDemoLocked = !!tourStep && editId === "demo-r1";
-              return (
+              const isTourLocked =
+                (tourStep === "canvas-demo" || tourStep === "success") && editId === "demo-r1";
+              const deleteBtn = (
                 <Button
                   variant="destructive"
-                  className="h-11 sm:mr-auto w-full sm:w-auto gap-2"
-                  disabled={isDemoLocked}
-                  title={isDemoLocked ? "教学引导中不可删除" : undefined}
+                  className="h-11 px-3"
+                  disabled={isTourLocked}
                   onClick={() => setDeleteConfirmOpen(true)}
+                  data-testid="button-delete-element"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Trash2 className="h-4 w-4 mr-1" />
                   删除元件
                 </Button>
               );
+              return isTourLocked ? (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span tabIndex={0}>{deleteBtn}</span>
+                    </TooltipTrigger>
+                    <TooltipContent>教学引导中不可删除</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : deleteBtn;
             })()}
-            <div className="flex gap-2 w-full sm:w-auto">
-              <Button variant="outline" className="flex-1 sm:flex-none h-11" onClick={() => setPropOpen(false)}>取消</Button>
-              <Button className="flex-1 sm:flex-none h-11" onClick={() => {
-                setElements(prev => prev.map(e => e.id === editId ? { ...e, ...editProps } as CanvasEl : e));
+            <div className="flex gap-2">
+              <Button variant="outline" className="h-11" onClick={() => setPropOpen(false)}>取消</Button>
+              <Button className="h-11" onClick={() => {
+                commitElements(prev => prev.map(e => e.id === editId ? { ...e, ...editProps } as CanvasEl : e));
                 setPropOpen(false);
               }}>保存</Button>
             </div>
@@ -1384,43 +1400,38 @@ export default function Solve() {
         </DialogContent>
       </Dialog>
 
-      {/* ── DELETE ELEMENT CONFIRM ── */}
-      <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
-        <DialogContent className="mx-4 rounded-2xl max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-destructive text-base">
-              <AlertCircle className="w-5 h-5" />
-              确认删除元件
-            </DialogTitle>
-            <DialogDescription className="text-sm pt-1">
-              将从画布上移除元件{" "}
-              <span className="font-mono font-semibold text-foreground">
-                {editProps.label ?? editId}
-              </span>
-              {editProps.type ? `（${editProps.type}）` : ""}。关联的导线和节点会保留。删除后可以用顶部的"撤销"按钮恢复。
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2 flex-row">
-            <Button variant="outline" className="flex-1 h-11" onClick={() => setDeleteConfirmOpen(false)}>
-              取消
-            </Button>
-            <Button
-              variant="destructive"
-              className="flex-1 h-11"
+      {/* ── DELETE CONFIRM DIALOG ── */}
+      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <AlertDialogContent className="mx-4 rounded-2xl max-w-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              确认删除{TYPE_LABEL[editProps.type ?? ""] ?? "元件"} {editProps.label ?? ""} 吗？
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              此操作不可撤销。将从画布上移除该{TYPE_LABEL[editProps.type ?? ""] ?? "元件"}
+              （已连接的导线和节点会保留）。如果误删可使用顶部"撤销"按钮恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="gap-2 flex-row justify-end">
+            <AlertDialogCancel className="h-11 mt-0">取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="h-11 bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => {
-                const label = editProps.label ?? editId ?? "元件";
-                setElements(prev => prev.filter(e => e.id !== editId));
+                const removedLabel = editProps.label ?? "元件";
+                commitElements(prev => prev.filter(e => e.id !== editId));
                 setDeleteConfirmOpen(false);
                 setPropOpen(false);
                 setEditId(null);
-                toast({ title: `已删除元件 ${label}`, duration: 2000 });
+                setEditProps({});
+                toast({ title: `已删除元件 ${removedLabel}`, duration: 2000 });
               }}
+              data-testid="button-confirm-delete-element"
             >
               确认删除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* ── NON-CIRCUIT CONFIRM ── */}
       <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
