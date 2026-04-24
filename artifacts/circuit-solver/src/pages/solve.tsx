@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,12 +15,12 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  Play, RotateCcw, Trash2, CheckCircle, Upload, Send, MessageSquare,
+  Play, RotateCcw, Trash2, Upload, Send, MessageSquare,
   AlertCircle, ImageIcon, Zap, BarChart2, MoreHorizontal, Settings2,
-  CheckCircle2, X,
+  CheckCircle2, X, MousePointer2,
 } from "lucide-react";
 import {
-  useSolveCircuit, useValidateCircuit, useAnalyzeCircuit,
+  useSolveCircuit, useAnalyzeCircuit,
   useExtractProblem, useChatWithAI,
 } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
@@ -389,7 +389,7 @@ function TourTooltip({
           <div className="flex-1 min-w-0">
             <p className="font-semibold text-sm text-foreground">电阻放置成功！</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              继续添加电压源、接地等元件，完成后点击"提交求解"获得答案。
+              放置元件后会自动切回"选择"模式：点击画布上的任意元件即可<span className="text-foreground font-medium">修改参数或删除</span>。继续添加电压源、接地等元件，完成后点击"提交求解"获得答案。
             </p>
           </div>
           <button
@@ -492,7 +492,6 @@ export default function Solve() {
 
   // ── API hooks
   const extractProblem  = useExtractProblem();
-  const validateCircuit = useValidateCircuit();
   const solveCircuit    = useSolveCircuit();
   const analyzeCircuit  = useAnalyzeCircuit();
   const chatWithAI      = useChatWithAI();
@@ -564,6 +563,97 @@ export default function Solve() {
     analysisType, frequency: acFreq,
   });
 
+  // ── Live circuit validation status (mirrors server-side validateCircuit but
+  //    runs locally on every elements change so the user gets instant feedback).
+  const circuitStatus = useMemo<{ ok: boolean; message: string; empty: boolean }>(() => {
+    if (!elements.length) {
+      return { ok: false, empty: true, message: "请放置元件以开始绘制电路" };
+    }
+
+    // Per-element value sanity (mirrors server validateCircuit value checks)
+    for (const el of elements) {
+      if (el.type === "wire" || el.type === "ground") continue;
+      if (el.value === undefined || el.value === null || Number.isNaN(el.value)) {
+        return { ok: false, empty: false, message: `元件 ${el.label ?? el.id} 缺少有效数值` };
+      }
+      if (el.type === "resistor" && el.value <= 0) {
+        return { ok: false, empty: false, message: `电阻 ${el.label ?? el.id} 的值必须大于 0` };
+      }
+      if ((el.type === "capacitor" || el.type === "inductor") && el.value < 0) {
+        return { ok: false, empty: false, message: `${el.type === "capacitor" ? "电容" : "电感"} ${el.label ?? el.id} 的值不能为负` };
+      }
+      if (
+        (el.type === "vcvs" || el.type === "vccs" || el.type === "ccvs" || el.type === "cccs") &&
+        !el.controlBranchId
+      ) {
+        return { ok: false, empty: false, message: `受控源 ${el.label ?? el.id} 缺少控制支路` };
+      }
+    }
+
+    // Need at least one ground reference
+    const hasGround = elements.some((e) => e.type === "ground");
+    if (!hasGround) {
+      return { ok: false, empty: false, message: "缺少接地节点（GND），请添加一个接地元件作为参考点" };
+    }
+
+    // Build node ids the same way buildCircuitInput does, then run union-find
+    // across non-ground elements (wires and components alike merge their two
+    // endpoints' connectivity). Ground elements anchor their start point to "0".
+    const nodeId = (p: Pt) => `${p.x},${p.y}`;
+    const parent = new Map<string, string>();
+    const find = (x: string): string => {
+      let cur = x;
+      while (parent.get(cur) !== cur) {
+        const p = parent.get(cur)!;
+        parent.set(cur, parent.get(p)!);
+        cur = parent.get(cur)!;
+      }
+      return cur;
+    };
+    const union = (a: string, b: string) => {
+      const ra = find(a), rb = find(b);
+      if (ra !== rb) parent.set(ra, rb);
+    };
+    const ensure = (id: string) => { if (!parent.has(id)) parent.set(id, id); };
+
+    ensure("0");
+    for (const el of elements) {
+      if (el.type === "ground") {
+        const a = nodeId(el.start);
+        ensure(a);
+        union(a, "0");
+        continue;
+      }
+      const a = nodeId(el.start), b = nodeId(el.end);
+      ensure(a); ensure(b);
+      union(a, b); // every two-terminal element makes its endpoints electrically reachable
+    }
+
+    // Every component endpoint must be in the same connected set as ground;
+    // otherwise the user has a floating sub-network the solver cannot reduce.
+    const groundRoot = find("0");
+    for (const el of elements) {
+      if (el.type === "ground") continue;
+      const a = nodeId(el.start), b = nodeId(el.end);
+      if (find(a) !== groundRoot || find(b) !== groundRoot) {
+        return {
+          ok: false, empty: false,
+          message: `元件 ${el.label ?? el.id} 未与接地节点连通，请用导线连接`,
+        };
+      }
+    }
+
+    // At least one non-trivial element must exist (just a wire + ground isn't a circuit)
+    const hasComponent = elements.some(
+      (e) => e.type !== "wire" && e.type !== "ground",
+    );
+    if (!hasComponent) {
+      return { ok: false, empty: false, message: "电路中需要至少一个元件（电阻、电源等）" };
+    }
+
+    return { ok: true, empty: false, message: "电路结构有效，可以提交求解" };
+  }, [elements]);
+
   // ── Canvas interaction
   const handlePoint = (clientX: number, clientY: number) => {
     if (!selectedTool || tourStep === "canvas-demo") return;
@@ -574,6 +664,8 @@ export default function Solve() {
         id: Math.random().toString(36).slice(2), type: "ground",
         start: pt, end: { x: pt.x, y: pt.y + GRID }, label: "GND",
       }]);
+      // Auto-return to select mode after placing ground (one-click element)
+      setSelectedTool(null);
       return;
     }
     if (!drawingStart) {
@@ -582,15 +674,20 @@ export default function Solve() {
       if (drawingStart.x === pt.x && drawingStart.y === pt.y) {
         setDrawingStart(null); setPreviewEnd(null); return;
       }
+      const placedTool = selectedTool;
       const newEl: CanvasEl = {
         id: Math.random().toString(36).slice(2),
-        type: selectedTool, start: drawingStart, end: pt,
-        value: 1, unit: DEFAULT_UNIT[selectedTool] ?? "",
-        label: `${selectedTool[0].toUpperCase()}${elements.length + 1}`,
+        type: placedTool, start: drawingStart, end: pt,
+        value: 1, unit: DEFAULT_UNIT[placedTool] ?? "",
+        label: `${placedTool[0].toUpperCase()}${elements.length + 1}`,
       };
       commitElements(prev => [...prev, newEl]);
       setDrawingStart(null); setPreviewEnd(null);
-      if (selectedTool !== "wire") {
+      if (placedTool !== "wire") {
+        // Auto-return to select mode for non-wire elements so the next
+        // canvas click edits an element instead of starting a new placement.
+        // (Wires are commonly drawn in sequence, so keep wire tool active.)
+        setSelectedTool(null);
         setEditId(newEl.id); setEditProps(newEl); setPropOpen(true);
       }
     }
@@ -660,15 +757,6 @@ export default function Solve() {
     } catch {
       toast({ title: "图片处理失败", description: "无法读取该图片，请换一张试试。", variant: "destructive" });
     }
-  };
-
-  const handleValidate = async () => {
-    if (!elements.length) { toast({ title: "提示", description: "请先绘制电路", variant: "destructive" }); return; }
-    try {
-      const res = await validateCircuit.mutateAsync({ data: buildCircuitInput() });
-      if (res.valid) toast({ title: "验证成功", description: "电路拓扑结构有效" });
-      else toast({ title: "验证失败", description: res.issues.map(i => i.message).join("；"), variant: "destructive" });
-    } catch { toast({ title: "错误", description: "验证失败", variant: "destructive" }); }
   };
 
   const handleSolve = async () => {
@@ -931,6 +1019,21 @@ export default function Solve() {
             {/* Element toolbar */}
             <div className="shrink-0 bg-card border-b border-border">
               <div className="flex items-center gap-1.5 px-2 py-2 overflow-x-auto no-scrollbar">
+                {/* Select / pointer tool — exits placement mode so canvas clicks
+                    edit existing elements instead of starting a new placement. */}
+                <button
+                  onClick={() => { setSelectedTool(null); setDrawingStart(null); setPreviewEnd(null); }}
+                  className={[
+                    "shrink-0 pl-2 pr-3 py-1.5 rounded-lg text-xs font-medium border transition-all flex items-center gap-1.5",
+                    selectedTool === null
+                      ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                      : "bg-card text-foreground border-border active:bg-muted",
+                  ].join(" ")}
+                  data-testid="tool-select"
+                >
+                  <MousePointer2 className="w-4 h-4 shrink-0" />
+                  <span>选择</span>
+                </button>
                 {COMMON_TOOLS.map(t => {
                   const isHighlighted = tourStep === "highlight-tool" && t.type === "resistor";
                   return (
@@ -967,7 +1070,9 @@ export default function Solve() {
                       : `已选：${COMMON_TOOLS.find(t => t.type === selectedTool)?.full ?? selectedTool}  —  点击起点`
                     : tourStep === "highlight-tool"
                       ? "点击上方高亮的电阻元件开始引导"
-                      : "选择元件后点击画布绘制"}
+                      : elements.length > 0
+                        ? "选择模式：点击已放置的元件可修改/删除"
+                        : "从工具栏选择一个元件后点击画布绘制"}
                 </p>
                 <div className="flex items-center gap-1 shrink-0">
                   <button onClick={undo}
@@ -1058,27 +1163,44 @@ export default function Solve() {
               )}
             </div>
 
-            {/* Bottom action bar */}
-            <div className="shrink-0 bg-card border-t border-border px-3 py-2 flex gap-2">
-              <button
-                onClick={handleValidate}
-                disabled={validateCircuit.isPending || !elements.length || !!tourStep}
-                className="flex-1 h-11 rounded-xl border border-primary/40 text-primary font-medium text-sm flex items-center justify-center gap-1.5 disabled:opacity-40 active:bg-primary/5">
-                <CheckCircle className="w-4 h-4" />
-                验证
-              </button>
-              <button
-                onClick={handleSolve}
-                disabled={isLoading || !elements.length || !!tourStep}
+            {/* Bottom action bar — live validation status + solve button */}
+            <div className="shrink-0 bg-card border-t border-border">
+              {/* Live validation status (auto-checks on every elements change) */}
+              <div
+                data-testid="circuit-status"
                 className={[
-                  "flex-[2] h-11 rounded-xl font-semibold text-sm flex items-center justify-center gap-1.5 shadow-md disabled:opacity-50 active:opacity-90 transition-all",
-                  tourStep === "success"
-                    ? "bg-primary text-primary-foreground animate-pulse ring-4 ring-primary/30"
-                    : "bg-primary text-primary-foreground",
-                ].join(" ")}>
-                <Play className="w-4 h-4" />
-                提交求解
-              </button>
+                  "px-3 py-2 flex items-center gap-2 text-xs font-medium border-b",
+                  circuitStatus.empty
+                    ? "bg-muted/40 text-muted-foreground border-border"
+                    : circuitStatus.ok
+                      ? "bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/30"
+                      : "bg-destructive/10 text-destructive border-destructive/30",
+                ].join(" ")}
+              >
+                {circuitStatus.empty ? (
+                  <ImageIcon className="w-4 h-4 shrink-0" />
+                ) : circuitStatus.ok ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                )}
+                <span className="flex-1 truncate">{circuitStatus.message}</span>
+              </div>
+
+              <div className="px-3 py-2">
+                <button
+                  onClick={handleSolve}
+                  disabled={isLoading || !elements.length || !!tourStep}
+                  className={[
+                    "w-full h-11 rounded-xl font-semibold text-sm flex items-center justify-center gap-1.5 shadow-md disabled:opacity-50 active:opacity-90 transition-all",
+                    tourStep === "success"
+                      ? "bg-primary text-primary-foreground animate-pulse ring-4 ring-primary/30"
+                      : "bg-primary text-primary-foreground",
+                  ].join(" ")}>
+                  <Play className="w-4 h-4" />
+                  提交求解
+                </button>
+              </div>
             </div>
           </div>
         )}
