@@ -13,4 +13,6 @@ export interface AnalyzeRequest {
   solution: CircuitSolution;
   /** Optional extracted problem text from the image */
   problemText?: string;
+  /** Labels of elements whose values were marked "待定" (unknown) by the user. The MNA solver still ran with substituted placeholder values, but the AI explanation should treat these as symbolic unknowns. */
+  unknownElements?: string[];
 }

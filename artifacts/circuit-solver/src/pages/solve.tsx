@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import {
   Play, RotateCcw, Trash2, Upload, Send, MessageSquare,
   AlertCircle, ImageIcon, Zap, BarChart2, MoreHorizontal, Settings2,
@@ -38,6 +39,7 @@ interface CanvasEl {
   start: Pt; end: Pt;
   value?: number; unit?: string; label?: string;
   controlBranchId?: string; gain?: number;
+  unknown?: boolean;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -279,6 +281,7 @@ function renderEl(
   const label = (el as CanvasEl).label;
   const val   = (el as CanvasEl).value;
   const unit  = (el as CanvasEl).unit ?? "";
+  const isUnknown = (el as CanvasEl).unknown === true;
 
   return (
     <g key={el.id} opacity={preview ? 0.45 : 1}>
@@ -287,7 +290,7 @@ function renderEl(
       {!preview && type !== "ground" && <circle cx={end.x} cy={end.y} r={3} fill={c} />}
       {!preview && label && (
         <text x={mx} y={my - 14} textAnchor="middle" fill="#0f172a" fontSize="11" fontWeight="bold">
-          {label}{val !== undefined ? ` ${val}${unit}` : ""}
+          {label}{isUnknown ? " = ?" : (val !== undefined ? ` ${val}${unit}` : "")}
         </text>
       )}
     </g>
@@ -404,6 +407,92 @@ function TourTooltip({
   );
 }
 
+// ─── Reference-node inference (used when no GND element is placed) ──────────
+// Returns the node-id string ("x,y") that should be treated as ground (0V), or
+// `null` when there isn't enough topology to infer one. Also returns a short
+// human-friendly reason describing why that node was chosen, for the status bar.
+function inferReferenceNode(els: CanvasEl[]): { nodeId: string; reason: string } | null {
+  const nonMeta = els.filter((e) => e.type !== "ground");
+  if (nonMeta.length === 0) return null;
+  const nid = (p: Pt) => `${p.x},${p.y}`;
+
+  // Priority 1: pick a DC voltage source's negative terminal (= nodeTo by the
+  // SVG convention used in renderEl: "+" rotates to nodeFrom side).
+  const vsrcs = nonMeta.filter((e) => e.type === "voltage_source");
+  if (vsrcs.length > 0) {
+    // Multiple sources → prefer the one whose negative terminal is visually lowest.
+    const best = vsrcs.slice().sort((a, b) => b.end.y - a.end.y)[0];
+    return {
+      nodeId: nid(best.end),
+      reason: `已自动将 ${best.label ?? best.id} 的负极设为参考点`,
+    };
+  }
+
+  // Priority 2: union-find connected groups across all wires/elements; pick the
+  // group with the most members (≈ longest bus), then the node with greatest y.
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let cur = x;
+    while (parent.get(cur) !== cur) {
+      const p = parent.get(cur)!;
+      parent.set(cur, parent.get(p)!);
+      cur = parent.get(cur)!;
+    }
+    return cur;
+  };
+  const ensure = (id: string) => { if (!parent.has(id)) parent.set(id, id); };
+  const union = (a: string, b: string) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  const ptOf = new Map<string, Pt>();
+  for (const el of nonMeta) {
+    const a = nid(el.start), b = nid(el.end);
+    ensure(a); ensure(b);
+    ptOf.set(a, el.start); ptOf.set(b, el.end);
+    union(a, b);
+  }
+  const groups = new Map<string, string[]>();
+  for (const id of parent.keys()) {
+    const r = find(id);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r)!.push(id);
+  }
+  let bestGroup: string[] | null = null;
+  for (const g of groups.values()) {
+    if (!bestGroup || g.length > bestGroup.length) bestGroup = g;
+  }
+  if (bestGroup && bestGroup.length > 0) {
+    const sorted = bestGroup.slice().sort((a, b) => (ptOf.get(b)!.y - ptOf.get(a)!.y));
+    return {
+      nodeId: sorted[0],
+      reason: "已自动将画布最下方的连通节点设为参考点",
+    };
+  }
+
+  // Priority 3 (degenerate fallback): any node we've seen.
+  const first = nid(nonMeta[0].start);
+  return { nodeId: first, reason: "已自动选择默认参考点" };
+}
+
+// Default placeholder values used when an element is marked "待定" (unknown):
+// MNA still needs a finite number to factor the matrix, so we substitute a
+// safe non-zero default keyed by element type.
+function placeholderForUnknown(type: ElementType): { value: number; unit: string } {
+  switch (type) {
+    case "resistor":       return { value: 1,       unit: "Ω" };
+    case "capacitor":      return { value: 1e-6,    unit: "F" };
+    case "inductor":       return { value: 1e-3,    unit: "H" };
+    case "voltage_source": return { value: 1,       unit: "V" };
+    case "current_source": return { value: 1,       unit: "A" };
+    case "vcvs":           return { value: 1,       unit: "V/V" };
+    case "vccs":           return { value: 1,       unit: "A/V" };
+    case "ccvs":           return { value: 1,       unit: "V/A" };
+    case "cccs":           return { value: 1,       unit: "A/A" };
+    default:               return { value: 1,       unit: "" };
+  }
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 type Tab = "upload" | "canvas" | "results" | "chat";
 
@@ -493,6 +582,10 @@ export default function Solve() {
     summary: string; keyInsights: string[];
   } | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
+  // Labels of elements that were marked "待定" in the most recent solve — used
+  // to show a hint on the results page so students know the AI is reasoning
+  // symbolically over those parameters.
+  const [unknownInLastSolve, setUnknownInLastSolve] = useState<string[]>([]);
 
   // ── Chat
   const [chatMsgs, setChatMsgs] = useState<{ role: string; content: string }[]>([]);
@@ -560,20 +653,55 @@ export default function Solve() {
     return { x: snap(clientX - rect.left), y: snap(clientY - rect.top) };
   }, []);
 
-  const buildCircuitInput = () => ({
-    nodes: Array.from(new Set(elements.flatMap(e => [
+  // Builds the payload sent to /api/circuit/solve and /api/ai/analyze.
+  // Returns the input plus metadata describing how unknown ("待定") values were
+  // substituted and whether a reference node had to be inferred — both pieces
+  // are surfaced in the UI but never leak into the server request itself.
+  const buildCircuitInput = () => {
+    const hasGround = elements.some((e) => e.type === "ground");
+    const inferred = hasGround ? null : inferReferenceNode(elements);
+    const refNode = inferred?.nodeId ?? null;
+
+    const remap = (id: string) => (refNode !== null && id === refNode ? "0" : id);
+
+    const rawNodeIds = elements.flatMap((e) => [
       `${e.start.x},${e.start.y}`,
       e.type === "ground" ? "0" : `${e.end.x},${e.end.y}`,
-    ]))).map(id => ({ id })),
-    elements: elements.map(e => ({
-      id: e.id, type: e.type,
-      nodeFrom: `${e.start.x},${e.start.y}`,
-      nodeTo: e.type === "ground" ? "0" : `${e.end.x},${e.end.y}`,
-      value: e.value, unit: e.unit, label: e.label,
-      controlBranchId: e.controlBranchId, gain: e.gain,
-    })),
-    analysisType, frequency: acFreq,
-  });
+    ]);
+    const nodes = Array.from(new Set(rawNodeIds.map(remap))).map((id) => ({ id }));
+
+    const unknownLabels: string[] = [];
+    const outElements = elements.map((e) => {
+      const from = remap(`${e.start.x},${e.start.y}`);
+      const to = e.type === "ground" ? "0" : remap(`${e.end.x},${e.end.y}`);
+      let value = e.value;
+      let unit = e.unit;
+      if (e.unknown && e.type !== "wire" && e.type !== "ground") {
+        const ph = placeholderForUnknown(e.type);
+        value = ph.value;
+        unit = unit ?? ph.unit;
+        unknownLabels.push(e.label ?? e.id);
+      }
+      return {
+        id: e.id, type: e.type,
+        nodeFrom: from,
+        nodeTo: to,
+        value, unit, label: e.label,
+        controlBranchId: e.controlBranchId, gain: e.gain,
+      };
+    });
+
+    return {
+      input: {
+        nodes,
+        elements: outElements,
+        analysisType,
+        frequency: acFreq,
+      },
+      autoReference: inferred,
+      unknownLabels,
+    };
+  };
 
   // ── Live circuit validation status (mirrors server-side validateCircuit but
   //    runs locally on every elements change so the user gets instant feedback).
@@ -582,11 +710,14 @@ export default function Solve() {
       return { ok: false, empty: true, message: "请放置元件以开始绘制电路" };
     }
 
-    // Per-element value sanity (mirrors server validateCircuit value checks)
+    // Per-element value sanity (mirrors server validateCircuit value checks).
+    // Elements marked "待定" (unknown) are skipped here — they're substituted
+    // with a safe placeholder by buildCircuitInput before being sent to MNA.
     for (const el of elements) {
       if (el.type === "wire" || el.type === "ground") continue;
+      if (el.unknown) continue;
       if (el.value === undefined || el.value === null || Number.isNaN(el.value)) {
-        return { ok: false, empty: false, message: `元件 ${el.label ?? el.id} 缺少有效数值` };
+        return { ok: false, empty: false, message: `元件 ${el.label ?? el.id} 缺少有效数值（可勾选"待定"由 AI 求解）` };
       }
       if (el.type === "resistor" && el.value <= 0) {
         return { ok: false, empty: false, message: `电阻 ${el.label ?? el.id} 的值必须大于 0` };
@@ -602,11 +733,13 @@ export default function Solve() {
       }
     }
 
-    // Need at least one ground reference
+    // Reference node: prefer an explicit GND element; otherwise auto-infer.
     const hasGround = elements.some((e) => e.type === "ground");
-    if (!hasGround) {
-      return { ok: false, empty: false, message: "缺少接地节点（GND），请添加一个接地元件作为参考点" };
+    const inferred = hasGround ? null : inferReferenceNode(elements);
+    if (!hasGround && !inferred) {
+      return { ok: false, empty: false, message: "无法自动选择参考点，请放置一个接地元件" };
     }
+    const refNodeId = hasGround ? "0" : inferred!.nodeId;
 
     // Build node ids the same way buildCircuitInput does, then run union-find
     // across non-ground elements (wires and components alike merge their two
@@ -628,12 +761,12 @@ export default function Solve() {
     };
     const ensure = (id: string) => { if (!parent.has(id)) parent.set(id, id); };
 
-    ensure("0");
+    ensure(refNodeId);
     for (const el of elements) {
       if (el.type === "ground") {
         const a = nodeId(el.start);
         ensure(a);
-        union(a, "0");
+        union(a, refNodeId);
         continue;
       }
       const a = nodeId(el.start), b = nodeId(el.end);
@@ -641,16 +774,16 @@ export default function Solve() {
       union(a, b); // every two-terminal element makes its endpoints electrically reachable
     }
 
-    // Every component endpoint must be in the same connected set as ground;
-    // otherwise the user has a floating sub-network the solver cannot reduce.
-    const groundRoot = find("0");
+    // Every component endpoint must be in the same connected set as the
+    // reference node; otherwise the user has a floating sub-network.
+    const refRoot = find(refNodeId);
     for (const el of elements) {
       if (el.type === "ground") continue;
       const a = nodeId(el.start), b = nodeId(el.end);
-      if (find(a) !== groundRoot || find(b) !== groundRoot) {
+      if (find(a) !== refRoot || find(b) !== refRoot) {
         return {
           ok: false, empty: false,
-          message: `元件 ${el.label ?? el.id} 未与接地节点连通，请用导线连接`,
+          message: `元件 ${el.label ?? el.id} 未与参考节点连通，请用导线连接`,
         };
       }
     }
@@ -663,7 +796,11 @@ export default function Solve() {
       return { ok: false, empty: false, message: "电路中需要至少一个元件（电阻、电源等）" };
     }
 
-    return { ok: true, empty: false, message: "电路结构有效，可以提交求解" };
+    const unknownCount = elements.filter((e) => e.unknown).length;
+    const parts: string[] = ["电路结构有效，可以提交求解"];
+    if (!hasGround && inferred) parts.push(inferred.reason);
+    if (unknownCount > 0) parts.push(`${unknownCount} 个待定参数将由 AI 推导`);
+    return { ok: true, empty: false, message: parts.join("；") };
   }, [elements]);
 
   // ── Canvas interaction
@@ -774,17 +911,29 @@ export default function Solve() {
   const handleSolve = async () => {
     if (!elements.length) { toast({ title: "提示", description: "请先绘制电路", variant: "destructive" }); return; }
     setSolveError(null);
+    // Clear stale analysis/hint from any previous solve up-front so the results
+    // tab never displays the prior solution's "待定" labels alongside this run's
+    // numbers (matches what the user just clicked solve for).
+    setAnalysis(null);
+    const { input, unknownLabels } = buildCircuitInput();
+    setUnknownInLastSolve(unknownLabels);
     try {
-      const input = buildCircuitInput();
       const sol = await solveCircuit.mutateAsync({ data: input });
       setSolution(sol);
       toast({ title: "求解完成", description: "正在生成 AI 解析..." });
       setTab("results");
       const ana = await analyzeCircuit.mutateAsync({
-        data: { circuit: input, solution: sol, problemText: problemExtracted?.problemText },
+        data: {
+          circuit: input,
+          solution: sol,
+          problemText: problemExtracted?.problemText,
+          ...(unknownLabels.length > 0 ? { unknownElements: unknownLabels } : {}),
+        },
       });
       setAnalysis(ana);
     } catch (err: unknown) {
+      // Make sure no half-finished analysis bleeds into the results pane.
+      setAnalysis(null);
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
         ?? "无法求解此电路，请检查拓扑（接地、元件连接）。";
       setSolveError(msg);
@@ -1303,6 +1452,14 @@ export default function Solve() {
                         <h3 className="text-sm font-semibold">AI 解析</h3>
                         <Badge className="text-xs">AI 生成</Badge>
                       </div>
+                      {unknownInLastSolve.length > 0 && (
+                        <div
+                          data-testid="unknown-elements-hint"
+                          className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+                        >
+                          本题包含 {unknownInLastSolve.length} 个待定参数（{unknownInLastSolve.join("、")}），下方 AI 解析按符号方式给出，数值表中的数字基于占位值。
+                        </div>
+                      )}
                       <div className="text-sm text-muted-foreground bg-muted/30 p-4 rounded-xl border border-border leading-relaxed">
                         {analysis.summary}
                       </div>
@@ -1471,12 +1628,44 @@ export default function Solve() {
               <div className="space-y-1.5">
                 <Label className="text-xs font-semibold">数值</Label>
                 <div className="flex gap-2">
-                  <Input type="number" step="any" className="flex-1 h-11 font-mono"
-                    value={editProps.value ?? ""}
-                    onChange={e => setEditProps({ ...editProps, value: Number(e.target.value) })} />
+                  <Input
+                    type="number"
+                    step="any"
+                    className="flex-1 h-11 font-mono"
+                    placeholder={editProps.unknown ? "待定" : ""}
+                    disabled={!!editProps.unknown}
+                    value={editProps.unknown ? "" : (editProps.value ?? "")}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setEditProps({ ...editProps, value: v === "" ? undefined : Number(v) });
+                    }}
+                    data-testid="input-element-value"
+                  />
                   <Input className="w-14 h-11 text-center font-mono bg-muted"
                     value={editProps.unit ?? ""}
                     onChange={e => setEditProps({ ...editProps, unit: e.target.value })} />
+                </div>
+                <div className="flex items-center justify-between rounded-lg bg-muted/40 px-3 py-2">
+                  <div className="flex flex-col">
+                    <Label htmlFor="prop-unknown-toggle" className="text-xs font-semibold">
+                      待定（题目未给出，由 AI 求解）
+                    </Label>
+                    <span className="text-[10px] text-muted-foreground">
+                      勾选后将以符号方式参与求解，AI 会按未知量推导
+                    </span>
+                  </div>
+                  <Switch
+                    id="prop-unknown-toggle"
+                    checked={!!editProps.unknown}
+                    onCheckedChange={(checked) => {
+                      setEditProps((prev) => ({
+                        ...prev,
+                        unknown: checked,
+                        ...(checked ? { value: undefined } : {}),
+                      }));
+                    }}
+                    data-testid="switch-element-unknown"
+                  />
                 </div>
               </div>
             )}
@@ -1490,8 +1679,16 @@ export default function Solve() {
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-xs font-semibold">增益</Label>
-                  <Input type="number" step="any" className="h-11 font-mono" value={editProps.gain ?? ""}
-                    onChange={e => setEditProps({ ...editProps, gain: Number(e.target.value) })} />
+                  <Input
+                    type="number"
+                    step="any"
+                    className="h-11 font-mono"
+                    value={editProps.gain ?? ""}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setEditProps({ ...editProps, gain: v === "" ? undefined : Number(v) });
+                    }}
+                  />
                 </div>
               </>
             )}
@@ -1536,7 +1733,8 @@ export default function Solve() {
                   current.value !== merged.value ||
                   current.unit !== merged.unit ||
                   current.controlBranchId !== merged.controlBranchId ||
-                  current.gain !== merged.gain;
+                  current.gain !== merged.gain ||
+                  !!current.unknown !== !!merged.unknown;
                 if (changed) {
                   commitElements(prev => prev.map(e => e.id === editId ? merged : e));
                 }

@@ -255,6 +255,12 @@ export const AnalyzeCircuitBody = zod.object({
     .string()
     .optional()
     .describe("Optional extracted problem text from the image"),
+  unknownElements: zod
+    .array(zod.string())
+    .optional()
+    .describe(
+      'Labels of elements whose values were marked \"待定\" (unknown) by the user. The MNA solver still ran with substituted placeholder values, but the AI explanation should treat these as symbolic unknowns.',
+    ),
 });
 
 export const AnalyzeCircuitResponse = zod.object({

@@ -36,7 +36,15 @@ A Chinese-language mobile-first web app helping university students solve circui
 - Mobile-first bottom 4-tab nav: 题目 / 画布 / 结果 / 助教.
 - Canvas uses an SVG grid; click two grid points to place an element. After placing a non-wire element, the property dialog auto-opens.
 - Property dialog supports edit + **delete** (red destructive button + confirmation dialog + toast). The delete button is disabled while the tour-mode demo element (`demo-r1`) is active.
+- Property dialog also exposes a **"待定"** (TBD) Switch — toggling it on disables the value input, marks the element with `unknown: true`, and renders its label as `Label = ?` on the canvas. Number inputs (value + gain) preserve an empty string as `undefined` instead of coercing to 0, so a cleared field stays cleared.
 - All user mutations (placement, edit, delete, clear) flow through `commitElements`, which snapshots the previous state into a 50-deep `history` stack. The top toolbar "撤销" button pops the stack to restore the prior state. The delete toast also exposes a quick "撤销" action that re-adds the removed element. No-op saves (auto-opened property dialog where nothing changed) are filtered out so a single placement counts as one undo step.
+
+### Reference-node inference & 待定 substitution
+- When the user has placed no `ground` element, `inferReferenceNode(elements)` picks a virtual reference: (1) the negative terminal (`nodeTo`) of the DC voltage source whose end y is largest; (2) otherwise the union-find connected group with the most members, then the node with greatest y; (3) otherwise the first endpoint seen.
+- `buildCircuitInput` remaps the inferred node id to `"0"` before sending to the server, so MNA / `validateCircuit` keep treating `"0"` as ground without any server change. The live status bar surfaces the reason (e.g. "已自动将 V1 的负极设为参考点").
+- Elements marked `unknown: true` get a per-type placeholder (`placeholderForUnknown`: 1Ω / 1µF / 1mH / 1V / 1A / gain 1) substituted into the MNA input so the matrix factors. Their labels are collected as `unknownLabels` and sent on the analyze request as `unknownElements: string[]`.
+- The AI prompt appends a Chinese instruction telling the model to treat those labels as symbolic unknowns; numeric `computedAnswers` are still expected (computed against the placeholder values) so the verification loop continues to work.
+- The results page shows an amber hint with the待定 element labels above the AI 解析 section.
 
 ### AI analyze pipeline (`/api/ai/analyze`)
 - The MNA solver is the source of truth (`artifacts/api-server/src/lib/mna-solver.ts`).
