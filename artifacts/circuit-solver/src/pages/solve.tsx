@@ -62,6 +62,104 @@ const DEFAULT_UNIT: Record<string, string> = {
 const DEMO_START: Pt = { x: 96, y: 144 };
 const DEMO_END: Pt   = { x: 240, y: 144 };
 
+// ─── Tool icons (mini circuit-element schematics for the toolbar) ──────────
+function ToolIcon({ type, className }: { type: ElementType; className?: string }) {
+  const common = {
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.6,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+  switch (type) {
+    case "wire":
+      return (
+        <svg viewBox="0 0 28 16" className={className}>
+          <line x1={2} y1={8} x2={26} y2={8} {...common} />
+        </svg>
+      );
+    case "resistor":
+      return (
+        <svg viewBox="0 0 28 16" className={className}>
+          <path d="M2 8 H7 L9 3 L11 13 L13 3 L15 13 L17 3 L19 13 L21 8 H26" {...common} />
+        </svg>
+      );
+    case "capacitor":
+      return (
+        <svg viewBox="0 0 28 16" className={className}>
+          <line x1={2} y1={8} x2={12} y2={8} {...common} />
+          <line x1={12} y1={2} x2={12} y2={14} {...common} />
+          <line x1={16} y1={2} x2={16} y2={14} {...common} />
+          <line x1={16} y1={8} x2={26} y2={8} {...common} />
+        </svg>
+      );
+    case "inductor":
+      return (
+        <svg viewBox="0 0 28 16" className={className}>
+          <line x1={2} y1={8} x2={5} y2={8} {...common} />
+          <path d="M5 8 A2.5 2.5 0 0 1 10 8 A2.5 2.5 0 0 1 15 8 A2.5 2.5 0 0 1 20 8 A2.5 2.5 0 0 1 25 8" {...common} />
+          <line x1={25} y1={8} x2={26} y2={8} {...common} />
+        </svg>
+      );
+    case "voltage_source":
+      return (
+        <svg viewBox="0 0 28 16" className={className}>
+          <line x1={2} y1={8} x2={8} y2={8} {...common} />
+          <circle cx={14} cy={8} r={5.5} {...common} />
+          <line x1={11} y1={8} x2={13} y2={8} stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" />
+          <line x1={12} y1={7} x2={12} y2={9} stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" />
+          <line x1={15} y1={8} x2={17} y2={8} stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" />
+          <line x1={20} y1={8} x2={26} y2={8} {...common} />
+        </svg>
+      );
+    case "current_source":
+      return (
+        <svg viewBox="0 0 28 16" className={className}>
+          <line x1={2} y1={8} x2={8} y2={8} {...common} />
+          <circle cx={14} cy={8} r={5.5} {...common} />
+          <line x1={10.5} y1={8} x2={17} y2={8} {...common} />
+          <polyline points="15,5.5 17.5,8 15,10.5" {...common} />
+          <line x1={20} y1={8} x2={26} y2={8} {...common} />
+        </svg>
+      );
+    case "ground":
+      return (
+        <svg viewBox="0 0 28 16" className={className}>
+          <line x1={14} y1={1} x2={14} y2={7} {...common} />
+          <line x1={7} y1={7} x2={21} y2={7} {...common} />
+          <line x1={9.5} y1={10.5} x2={18.5} y2={10.5} {...common} />
+          <line x1={12} y1={14} x2={16} y2={14} {...common} />
+        </svg>
+      );
+    // Controlled sources — diamond shape
+    case "vcvs":
+    case "ccvs":
+      return (
+        <svg viewBox="0 0 28 16" className={className}>
+          <line x1={2} y1={8} x2={8} y2={8} {...common} />
+          <polygon points="14,2.5 19.5,8 14,13.5 8.5,8" {...common} />
+          <line x1={11.5} y1={8} x2={13} y2={8} stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" />
+          <line x1={12.25} y1={7.25} x2={12.25} y2={8.75} stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" />
+          <line x1={15} y1={8} x2={16.5} y2={8} stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" />
+          <line x1={20} y1={8} x2={26} y2={8} {...common} />
+        </svg>
+      );
+    case "vccs":
+    case "cccs":
+      return (
+        <svg viewBox="0 0 28 16" className={className}>
+          <line x1={2} y1={8} x2={8} y2={8} {...common} />
+          <polygon points="14,2.5 19.5,8 14,13.5 8.5,8" {...common} />
+          <line x1={11} y1={8} x2={16} y2={8} {...common} />
+          <polyline points="14.5,5.8 16.5,8 14.5,10.2" {...common} />
+          <line x1={20} y1={8} x2={26} y2={8} {...common} />
+        </svg>
+      );
+    default:
+      return null;
+  }
+}
+
 // ─── Tour ────────────────────────────────────────────────────────────────────
 type TourStep = "highlight-tool" | "canvas-demo" | "success" | null;
 
@@ -813,7 +911,7 @@ export default function Solve() {
                       key={t.type}
                       onClick={() => { setSelectedTool(t.type); setDrawingStart(null); }}
                       className={[
-                        "shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all",
+                        "shrink-0 pl-2 pr-3 py-1.5 rounded-lg text-xs font-medium border transition-all flex items-center gap-1.5",
                         selectedTool === t.type
                           ? "bg-primary text-primary-foreground border-primary shadow-sm"
                           : isHighlighted
@@ -821,7 +919,8 @@ export default function Solve() {
                             : "bg-card text-foreground border-border active:bg-muted",
                       ].join(" ")}
                     >
-                      {t.short}
+                      <ToolIcon type={t.type} className="w-7 h-4 shrink-0" />
+                      <span>{t.short}</span>
                     </button>
                   );
                 })}
@@ -1177,11 +1276,12 @@ export default function Solve() {
               {MORE_TOOLS.map(t => (
                 <button key={t.type}
                   onClick={() => { setSelectedTool(t.type); setShowMoreTools(false); setTab("canvas"); }}
-                  className={`h-12 rounded-xl border text-sm font-medium transition-colors
+                  className={`h-14 px-3 rounded-xl border text-sm font-medium transition-colors flex items-center gap-2
                     ${selectedTool === t.type
                       ? "bg-primary text-primary-foreground border-primary"
                       : "border-border text-foreground bg-card active:bg-muted"}`}>
-                  {t.label}
+                  <ToolIcon type={t.type} className="w-7 h-4 shrink-0" />
+                  <span className="text-left leading-tight">{t.label}</span>
                 </button>
               ))}
             </div>
