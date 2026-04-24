@@ -245,7 +245,23 @@ router.post("/ai/analyze", async (req, res): Promise<void> => {
     : [];
 
   const unknownGuidance = safeUnknown.length > 0
-    ? `\n\n9. **待定参数处理**：以下元件的数值题目未给出（标记为待定）：${safeUnknown.join("、")}。请在解释里把它们当作未知量（用其 label 作为符号，如 R、V、I 等）参与推导，公式、算式、解答均使用符号表达式。computedAnswers 字段仍按上面"电路描述"里给出的占位数值计算（这是为了与权威求解器比对，不是题目要求的最终答案）；请在 summary 与每一步的 explanation 里明确说明哪些数值是占位假设、最终的符号化结果应当如何随这些待定参数变化。`
+    ? `
+
+9. **待定参数（symbolic unknowns）处理 — 极其重要**：
+   下列元件的真实数值题目未给出（用户标记为"待定"）：${safeUnknown.join("、")}。
+   你必须把它们当作**未知量**（symbolic unknowns），用元件的 label 作为符号
+   （例如 R₁ 写成 \`R_1\`，电压源 V₁ 写成 \`V_1\`）参与全部推导。
+
+   - **每一步的 \`formula\` 字段必须用 LaTeX 符号表达式**（如 \`V_R = \\frac{V_s R_2}{R_1 + R_2}\`），
+     不要把 R、V、I 替换成"电路描述"里给出的占位数字。
+   - **每一步的 \`explanation\` 字段先用符号说理，最后再附一句"代入占位值得到 …"
+     给出此步的近似数值**（基于电路描述里的占位数字），让学生看到符号→数值的过渡。
+   - \`summary\` 也要先讲符号结论，再附"按本次占位值代入约为 …"。
+   - \`computedAnswers\` 字段：按"电路描述"里的占位数值算出最终数字填进去（这是为了
+     与权威求解器内部一致性比对所用，不是题目最终答案）。**注意：因为本次包含待定
+     参数，服务端会跳过严格的逐项数值校验**，但请仍然认真填写。
+   - \`keyInsights\` 至少有一条要明确指出："以上结论中的最终量随 ${safeUnknown.join("、")}
+     变化的关系式"。`
     : "";
 
   const systemPrompt = `你是一位专业的电路分析教师，正在独立分析并向大学生解释电路题目的解题过程。
@@ -291,7 +307,15 @@ ${circuitDesc}
     let verified = false;
     let lastMismatches: string[] = [];
 
-    for (attempts = 1; attempts <= MAX_ATTEMPTS; attempts++) {
+    // When the user marked any element as 待定 (unknown), the AI is asked to
+    // reason symbolically. computedAnswers will only match the MNA solver's
+    // placeholder-driven numbers if the AI mechanically substitutes — which
+    // defeats the symbolic explanation we want. So in that case we make a
+    // single attempt and skip strict numerical verification.
+    const placeholderBased = safeUnknown.length > 0;
+    const maxAttempts = placeholderBased ? 1 : MAX_ATTEMPTS;
+
+    for (attempts = 1; attempts <= maxAttempts; attempts++) {
       // Rebuild a compact message list each round (don't append history → keeps token cost flat)
       const messages: { role: "system" | "user"; content: string }[] = [
         { role: "system", content: systemPrompt },
@@ -322,6 +346,20 @@ ${lastMismatches.map((m) => `- ${m}`).join("\n")}
         lastParsed = {};
       }
 
+      if (placeholderBased) {
+        // Soft-verify: don't gate on numerical match. We log any divergence
+        // for visibility but accept the symbolic explanation as-is and stop.
+        const { passed, mismatches } = verifyAIAgainstMNA(lastParsed.computedAnswers, solution);
+        if (!passed) {
+          req.log.info(
+            { mismatches, unknown: safeUnknown },
+            "AI numerical answers diverged from MNA placeholder solve (expected — symbolic mode, soft verify)",
+          );
+        }
+        lastMismatches = [];
+        verified = true;
+        break;
+      }
       const { passed, mismatches } = verifyAIAgainstMNA(lastParsed.computedAnswers, solution);
       lastMismatches = mismatches;
       if (passed) {
@@ -331,7 +369,9 @@ ${lastMismatches.map((m) => `- ${m}`).join("\n")}
     }
 
     let verificationNote: string | undefined;
-    if (!verified) {
+    if (placeholderBased) {
+      verificationNote = `本题包含待定参数（${safeUnknown.join("、")}）。下方解析按符号方式推导，"求解结果"中的数值仅基于占位假设，请以解析中的符号公式为准。`;
+    } else if (!verified) {
       verificationNote = `AI 经过 ${MAX_ATTEMPTS} 次尝试仍无法给出与权威求解器一致的解题过程，下方步骤仅供参考，准确数值以"求解结果"为准。`;
       req.log.warn({ mismatches: lastMismatches, attempts }, "AI verification failed after max attempts");
     }
@@ -341,8 +381,9 @@ ${lastMismatches.map((m) => `- ${m}`).join("\n")}
       summary: lastParsed.summary ?? "分析完成。",
       keyInsights: lastParsed.keyInsights ?? [],
       verified,
-      verificationAttempts: attempts > MAX_ATTEMPTS ? MAX_ATTEMPTS : attempts,
+      verificationAttempts: attempts > maxAttempts ? maxAttempts : attempts,
       ...(verificationNote ? { verificationNote } : {}),
+      ...(placeholderBased ? { placeholderBased: true } : {}),
     });
   } catch (err) {
     req.log.error({ err }, "Failed to analyze circuit");

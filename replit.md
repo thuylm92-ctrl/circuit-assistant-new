@@ -43,8 +43,9 @@ A Chinese-language mobile-first web app helping university students solve circui
 - When the user has placed no `ground` element, `inferReferenceNode(elements)` picks a virtual reference: (1) the negative terminal (`nodeTo`) of the DC voltage source whose end y is largest; (2) otherwise the union-find connected group with the most members, then the node with greatest y; (3) otherwise the first endpoint seen.
 - `buildCircuitInput` remaps the inferred node id to `"0"` before sending to the server, so MNA / `validateCircuit` keep treating `"0"` as ground without any server change. The live status bar surfaces the reason (e.g. "已自动将 V1 的负极设为参考点").
 - Elements marked `unknown: true` get a per-type placeholder (`placeholderForUnknown`: 1Ω / 1µF / 1mH / 1V / 1A / gain 1) substituted into the MNA input so the matrix factors. Their labels are collected as `unknownLabels` and sent on the analyze request as `unknownElements: string[]`.
-- The AI prompt appends a Chinese instruction telling the model to treat those labels as symbolic unknowns; numeric `computedAnswers` are still expected (computed against the placeholder values) so the verification loop continues to work.
-- The results page shows an amber hint with the待定 element labels above the AI 解析 section.
+- The system prompt appends a strong Chinese instruction telling the model to (a) keep `formula` strictly LaTeX-symbolic with the element labels as symbols, (b) end each `explanation` with a "代入占位值得到 …" line giving the numeric substitution, and (c) put a parameter-relation insight in `keyInsights`.
+- When `unknownElements` is non-empty the analyze handler runs **only one AI attempt** and **soft-verifies** (mismatches are logged at info-level, never fail the request). It also returns `placeholderBased: true` and a placeholder-friendly `verificationNote`.
+- The results page reads `placeholderBased`, applies an amber border + faded italic numbers to the 节点电压 / 支路电流 tables (with a "基于占位值" Badge in each header — testids `badge-placeholder-voltages` / `badge-placeholder-currents`), and shows an amber hint (`unknown-elements-hint`) above 解析 explaining that the symbolic 解析 is the final answer.
 
 ### AI analyze pipeline (`/api/ai/analyze`)
 - The MNA solver is the source of truth (`artifacts/api-server/src/lib/mna-solver.ts`).

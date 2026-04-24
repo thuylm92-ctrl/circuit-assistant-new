@@ -140,6 +140,14 @@ export interface AnalysisResult {
   verificationAttempts?: number;
   /** Optional message shown to the user when verification failed or partially passed */
   verificationNote?: string;
+  /** True when the analysis was produced for a circuit that contains
+user-marked unknown ("待定") elements. In this case the numerical
+tables (nodeVoltages / branchCurrents) on the client are computed
+from placeholder values, and the AI explanation is symbolic. The
+client should visually mark numeric tables as "based on placeholder
+values" and skip strict numerical verification of AI vs MNA.
+ */
+  placeholderBased?: boolean;
 }
 
 export interface ExtractRequest {

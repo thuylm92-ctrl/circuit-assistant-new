@@ -584,6 +584,8 @@ export default function Solve() {
   const [analysis, setAnalysis] = useState<{
     steps: { stepNumber: number; title: string; explanation: string; formula?: string }[];
     summary: string; keyInsights: string[];
+    placeholderBased?: boolean;
+    verificationNote?: string;
   } | null>(null);
   const [solveError, setSolveError] = useState<string | null>(null);
   // Labels of elements that were marked "待定" in the most recent solve — used
@@ -934,7 +936,17 @@ export default function Solve() {
           ...(unknownLabels.length > 0 ? { unknownElements: unknownLabels } : {}),
         },
       });
-      setAnalysis(ana);
+      // Normalise the optional fields from the generated API type into the
+      // local non-optional shape so downstream JSX (which assumes arrays /
+      // strings) compiles cleanly under strict null checks and never blows up
+      // on a partial response.
+      setAnalysis({
+        steps: ana.steps ?? [],
+        summary: ana.summary ?? "分析完成。",
+        keyInsights: ana.keyInsights ?? [],
+        ...(ana.placeholderBased ? { placeholderBased: true } : {}),
+        ...(ana.verificationNote ? { verificationNote: ana.verificationNote } : {}),
+      });
     } catch (err: unknown) {
       // Make sure no half-finished analysis bleeds into the results pane.
       setAnalysis(null);
@@ -1390,14 +1402,40 @@ export default function Solve() {
                   </div>
                 </div>
               )}
-              {solution && (
+              {solution && (() => {
+                // When the user marked any element as 待定, the MNA solver ran
+                // on placeholder values (1Ω, 1V, ...). Surface that explicitly
+                // by (a) tagging both numeric tables with a "基于占位值" badge
+                // and (b) desaturating + fading the actual numbers so the user
+                // doesn't read them as ground truth.
+                const isPlaceholder =
+                  unknownInLastSolve.length > 0 || analysis?.placeholderBased === true;
+                const numCellCls = isPlaceholder
+                  ? "px-3 py-2.5 text-right font-mono text-muted-foreground/80 italic font-medium text-xs"
+                  : "px-3 py-2.5 text-right font-mono text-primary font-semibold text-xs";
+                const curCellCls = isPlaceholder
+                  ? "px-3 py-2.5 text-right font-mono text-muted-foreground/80 italic font-medium text-xs"
+                  : "px-3 py-2.5 text-right font-mono text-secondary font-semibold text-xs";
+                const tableWrapCls = isPlaceholder
+                  ? "rounded-xl border border-amber-500/30 overflow-hidden bg-amber-500/[0.03]"
+                  : "rounded-xl border border-border overflow-hidden";
+                return (
                 <>
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="text-sm font-semibold">节点电压</h3>
                       <Badge variant="outline" className="text-xs font-mono">{solution.nodeVoltages.length}</Badge>
+                      {isPlaceholder && (
+                        <Badge
+                          variant="outline"
+                          data-testid="badge-placeholder-voltages"
+                          className="text-[10px] font-medium border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10"
+                        >
+                          基于占位值
+                        </Badge>
+                      )}
                     </div>
-                    <div className="rounded-xl border border-border overflow-hidden">
+                    <div className={tableWrapCls}>
                       <table className="w-full text-sm">
                         <thead className="bg-muted/50">
                           <tr>
@@ -1409,7 +1447,7 @@ export default function Solve() {
                           {solution.nodeVoltages.map((nv, i) => (
                             <tr key={i}>
                               <td className="px-3 py-2.5 font-mono text-xs">{nv.nodeId}</td>
-                              <td className="px-3 py-2.5 text-right font-mono text-primary font-semibold text-xs">
+                              <td className={numCellCls}>
                                 {nv.voltage.toFixed(4)}{nv.voltageImag ? ` + j${nv.voltageImag.toFixed(4)}` : ""} {nv.unit}
                               </td>
                             </tr>
@@ -1419,11 +1457,20 @@ export default function Solve() {
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="text-sm font-semibold">支路电流</h3>
                       <Badge variant="outline" className="text-xs font-mono">{solution.branchCurrents.length}</Badge>
+                      {isPlaceholder && (
+                        <Badge
+                          variant="outline"
+                          data-testid="badge-placeholder-currents"
+                          className="text-[10px] font-medium border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10"
+                        >
+                          基于占位值
+                        </Badge>
+                      )}
                     </div>
-                    <div className="rounded-xl border border-border overflow-hidden">
+                    <div className={tableWrapCls}>
                       <table className="w-full text-sm">
                         <thead className="bg-muted/50">
                           <tr>
@@ -1435,7 +1482,7 @@ export default function Solve() {
                           {solution.branchCurrents.map((bc, i) => (
                             <tr key={i}>
                               <td className="px-3 py-2.5 font-mono text-xs">{bc.elementId}</td>
-                              <td className="px-3 py-2.5 text-right font-mono text-secondary font-semibold text-xs">
+                              <td className={curCellCls}>
                                 {bc.current.toFixed(4)}{bc.currentImag ? ` + j${bc.currentImag.toFixed(4)}` : ""} {bc.unit}
                               </td>
                             </tr>
@@ -1456,12 +1503,32 @@ export default function Solve() {
                         <h3 className="text-sm font-semibold">AI 解析</h3>
                         <Badge className="text-xs">AI 生成</Badge>
                       </div>
-                      {unknownInLastSolve.length > 0 && (
+                      {(unknownInLastSolve.length > 0 || analysis.placeholderBased) && (
                         <div
                           data-testid="unknown-elements-hint"
                           className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
                         >
-                          本题包含 {unknownInLastSolve.length} 个待定参数（{unknownInLastSolve.join("、")}），下方 AI 解析按符号方式给出，数值表中的数字基于占位值。
+                          {unknownInLastSolve.length > 0 ? (
+                            <p>
+                              本题包含 {unknownInLastSolve.length} 个待定参数（{unknownInLastSolve.join("、")}）。
+                              下方 AI 解析按 <span className="font-semibold">符号方式</span> 推导，
+                              上方"节点电压/支路电流"中的数字仅为基于占位值（电阻 1Ω、电源 1V/1A 等）的内部一致性参考，请以解析中的符号公式为最终答案。
+                            </p>
+                          ) : (
+                            <p>
+                              本题包含<span className="font-semibold">待定参数</span>。
+                              下方 AI 解析按 <span className="font-semibold">符号方式</span> 推导，
+                              上方"节点电压/支路电流"中的数字仅为基于占位值（电阻 1Ω、电源 1V/1A 等）的内部一致性参考，请以解析中的符号公式为最终答案。
+                            </p>
+                          )}
+                        </div>
+                      )}
+                      {analysis.verificationNote && unknownInLastSolve.length === 0 && !analysis.placeholderBased && (
+                        <div
+                          data-testid="verification-note"
+                          className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+                        >
+                          {analysis.verificationNote}
                         </div>
                       )}
                       <div className="text-sm text-muted-foreground bg-muted/30 p-4 rounded-xl border border-border leading-relaxed">
@@ -1508,7 +1575,8 @@ export default function Solve() {
                     </div>
                   )}
                 </>
-              )}
+                );
+              })()}
             </div>
           </ScrollArea>
         )}

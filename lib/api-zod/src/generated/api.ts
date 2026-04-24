@@ -290,6 +290,12 @@ export const AnalyzeCircuitResponse = zod.object({
     .describe(
       "Optional message shown to the user when verification failed or partially passed",
     ),
+  placeholderBased: zod
+    .boolean()
+    .optional()
+    .describe(
+      'True when the analysis was produced for a circuit that contains\nuser-marked unknown (\"待定\") elements. In this case the numerical\ntables (nodeVoltages \/ branchCurrents) on the client are computed\nfrom placeholder values, and the AI explanation is symbolic. The\nclient should visually mark numeric tables as \"based on placeholder\nvalues\" and skip strict numerical verification of AI vs MNA.\n',
+    ),
 });
 
 /**
@@ -442,6 +448,12 @@ export const ChatWithAIBody = zod.object({
         .optional()
         .describe(
           "Optional message shown to the user when verification failed or partially passed",
+        ),
+      placeholderBased: zod
+        .boolean()
+        .optional()
+        .describe(
+          'True when the analysis was produced for a circuit that contains\nuser-marked unknown (\"待定\") elements. In this case the numerical\ntables (nodeVoltages \/ branchCurrents) on the client are computed\nfrom placeholder values, and the AI explanation is symbolic. The\nclient should visually mark numeric tables as \"based on placeholder\nvalues\" and skip strict numerical verification of AI vs MNA.\n',
         ),
     })
     .optional(),
