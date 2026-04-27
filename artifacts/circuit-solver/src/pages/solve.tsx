@@ -1,5 +1,8 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { Link } from "wouter";
+
+// KaTeX-powered renderer; lazy so its chunk only loads on the 解析 tab.
+const MathContent = lazy(() => import("@/components/math-content"));
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1758,8 +1761,10 @@ export default function Solve() {
                           {analysis.verificationNote}
                         </div>
                       )}
-                      <div className="text-sm text-muted-foreground bg-muted/30 p-4 rounded-xl border border-border leading-relaxed">
-                        {analysis.summary}
+                      <div className="text-sm text-muted-foreground bg-muted/30 p-4 rounded-xl border border-border leading-relaxed whitespace-pre-wrap">
+                        <Suspense fallback={<span>{analysis.summary}</span>}>
+                          <MathContent>{analysis.summary}</MathContent>
+                        </Suspense>
                       </div>
                       <Accordion type="single" collapsible className="space-y-2">
                         {analysis.steps.map((step, idx) => (
@@ -1773,10 +1778,16 @@ export default function Solve() {
                               </div>
                             </AccordionTrigger>
                             <AccordionContent className="text-sm text-muted-foreground pb-4 pl-9 leading-relaxed">
-                              <p>{step.explanation}</p>
+                              <p className="whitespace-pre-wrap">
+                                <Suspense fallback={<span>{step.explanation}</span>}>
+                                  <MathContent>{step.explanation}</MathContent>
+                                </Suspense>
+                              </p>
                               {step.formula && (
-                                <div className="mt-3 p-3 bg-card rounded-lg font-mono text-xs border border-border overflow-x-auto">
-                                  {step.formula}
+                                <div className="mt-3 p-3 bg-card rounded-lg text-sm border border-border overflow-x-auto">
+                                  <Suspense fallback={<div className="font-mono text-xs">{step.formula}</div>}>
+                                    <MathContent formula>{step.formula}</MathContent>
+                                  </Suspense>
                                 </div>
                               )}
                             </AccordionContent>
@@ -1789,7 +1800,10 @@ export default function Solve() {
                           <ul className="space-y-1.5">
                             {analysis.keyInsights.map((ins, i) => (
                               <li key={i} className="text-sm flex items-start gap-2">
-                                <span className="text-primary mt-0.5">•</span>{ins}
+                                <span className="text-primary mt-0.5">•</span>
+                                <Suspense fallback={<span>{ins}</span>}>
+                                  <MathContent>{ins}</MathContent>
+                                </Suspense>
                               </li>
                             ))}
                           </ul>

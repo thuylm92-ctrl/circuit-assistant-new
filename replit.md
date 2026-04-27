@@ -56,3 +56,8 @@ A Chinese-language mobile-first web app helping university students solve circui
 - All AI numeric fields are coerced via `safeNum()` (Number.isFinite check, accepts numeric strings) so malformed model output produces a graceful "verification failed" rather than a 500.
 - Response includes `verified` (boolean), `verificationAttempts` (1–3), and `verificationNote` (only when failed).
 - Frontend shows a green "已校验 · N/3" badge when verified, an amber "未通过校验" badge + warning panel when failed. The MNA numerical answer is always displayed regardless of verification outcome.
+
+### Math typesetting in 解析
+- `step.formula` (treated as a complete LaTeX expression) and `summary` / `step.explanation` / `keyInsights` (mixed text containing `$$...$$`, `\(...\)`, or `\[...\]` segments) are rendered with KaTeX via `artifacts/circuit-solver/src/components/math-content.tsx`.
+- The component is loaded via `React.lazy` so the ~265KB JS / ~29KB CSS chunk (plus KaTeX fonts) is split out of the main bundle and only fetched when the user opens the 结果 tab. Each `<MathContent>` usage in `solve.tsx` is wrapped in a `<Suspense>` whose fallback shows the original raw string.
+- `formula` mode forces display-style; mixed mode preserves surrounding text via `whitespace-pre-wrap` so the original line breaks survive. Test ids: `math-formula` (display block), `math-inline` (inline span).
