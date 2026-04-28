@@ -11,7 +11,13 @@ export interface AnalysisResult {
   steps: AnalysisStep[];
   summary: string;
   keyInsights?: string[];
-  /** True if AI's independently computed answers matched the MNA solver within tolerance */
+  /** True if AI's independently computed answers matched the MNA solver
+within tolerance. NOTE: when placeholderBased is true the request
+uses soft-verify (numerical mismatches are logged but not enforced),
+so `verified` is always true in that mode and should be interpreted
+together with `placeholderBased`. Use `placeholderBased` to know
+whether the symbolic-explanation pathway was taken.
+ */
   verified?: boolean;
   /** How many AI attempts were made (1-3) */
   verificationAttempts?: number;

@@ -97,6 +97,12 @@ export const SolveCircuitResponse = zod.object({
     }),
   ),
   analysisType: zod.string(),
+  conditionNumber: zod
+    .number()
+    .optional()
+    .describe(
+      "Infinity-norm condition number of the MNA matrix, computed as\n‖A‖∞ × ‖A⁻¹‖∞. The solver augments Gauss–Jordan elimination\nwith the n×n identity to recover A⁻¹ for free during the same\nO(n³) factorisation, so this is an exact value (subject to\nfloating-point), not a lower bound. Values above ~1e8 indicate\nthe matrix is close to singular and the numerical solution may\ncarry significant floating-point error; the client surfaces a\nwarning chip when this threshold is crossed. Omitted when n <= 1\n(no elimination steps performed).\n",
+    ),
 });
 
 /**
@@ -250,6 +256,12 @@ export const AnalyzeCircuitBody = zod.object({
       }),
     ),
     analysisType: zod.string(),
+    conditionNumber: zod
+      .number()
+      .optional()
+      .describe(
+        "Infinity-norm condition number of the MNA matrix, computed as\n‖A‖∞ × ‖A⁻¹‖∞. The solver augments Gauss–Jordan elimination\nwith the n×n identity to recover A⁻¹ for free during the same\nO(n³) factorisation, so this is an exact value (subject to\nfloating-point), not a lower bound. Values above ~1e8 indicate\nthe matrix is close to singular and the numerical solution may\ncarry significant floating-point error; the client surfaces a\nwarning chip when this threshold is crossed. Omitted when n <= 1\n(no elimination steps performed).\n",
+      ),
   }),
   problemText: zod
     .string()
@@ -278,7 +290,7 @@ export const AnalyzeCircuitResponse = zod.object({
     .boolean()
     .optional()
     .describe(
-      "True if AI's independently computed answers matched the MNA solver within tolerance",
+      "True if AI's independently computed answers matched the MNA solver\nwithin tolerance. NOTE: when placeholderBased is true the request\nuses soft-verify (numerical mismatches are logged but not enforced),\nso `verified` is always true in that mode and should be interpreted\ntogether with `placeholderBased`. Use `placeholderBased` to know\nwhether the symbolic-explanation pathway was taken.\n",
     ),
   verificationAttempts: zod
     .number()
@@ -561,6 +573,12 @@ export const ChatWithAIBody = zod.object({
         }),
       ),
       analysisType: zod.string(),
+      conditionNumber: zod
+        .number()
+        .optional()
+        .describe(
+          "Infinity-norm condition number of the MNA matrix, computed as\n‖A‖∞ × ‖A⁻¹‖∞. The solver augments Gauss–Jordan elimination\nwith the n×n identity to recover A⁻¹ for free during the same\nO(n³) factorisation, so this is an exact value (subject to\nfloating-point), not a lower bound. Values above ~1e8 indicate\nthe matrix is close to singular and the numerical solution may\ncarry significant floating-point error; the client surfaces a\nwarning chip when this threshold is crossed. Omitted when n <= 1\n(no elimination steps performed).\n",
+        ),
     })
     .optional(),
   analysis: zod
@@ -579,7 +597,7 @@ export const ChatWithAIBody = zod.object({
         .boolean()
         .optional()
         .describe(
-          "True if AI's independently computed answers matched the MNA solver within tolerance",
+          "True if AI's independently computed answers matched the MNA solver\nwithin tolerance. NOTE: when placeholderBased is true the request\nuses soft-verify (numerical mismatches are logged but not enforced),\nso `verified` is always true in that mode and should be interpreted\ntogether with `placeholderBased`. Use `placeholderBased` to know\nwhether the symbolic-explanation pathway was taken.\n",
         ),
       verificationAttempts: zod
         .number()

@@ -584,6 +584,14 @@ export default function Solve() {
     nodeVoltages: { nodeId: string; voltage: number; voltageImag?: number; unit: string }[];
     branchCurrents: { elementId: string; current: number; currentImag?: number; unit: string }[];
     analysisType: string;
+    /**
+     * Lower-bound estimate of the MNA matrix condition number returned by the
+     * server. When > 1e8 the results page surfaces a warning chip telling the
+     * student the matrix is numerically close to singular and the answer may
+     * carry significant floating-point error. Threshold matches the safety-
+     * net B copy in /api docs.
+     */
+    conditionNumber?: number;
   } | null>(null);
   const [analysis, setAnalysis] = useState<{
     steps: { stepNumber: number; title: string; explanation: string; formula?: string }[];
@@ -842,6 +850,34 @@ export default function Solve() {
     if (!hasGround && inferred) parts.push(inferred.reason);
     if (unknownCount > 0) parts.push(`${unknownCount} 个待定参数将由 AI 推导`);
     return { ok: true, empty: false, message: parts.join("；") };
+  }, [elements]);
+
+  // ── Safety net A: client-side value-range advisory.
+  //    If the largest and smallest finite |value| in the circuit span more
+  //    than 9 orders of magnitude, the resulting MNA matrix tends to be
+  //    numerically ill-conditioned (e.g. a 1 GΩ resistor sitting next to a
+  //    1 mΩ shunt). We surface a *gray hint* — not a hard error — telling
+  //    the student the answer may carry floating-point noise. Wires, grounds
+  //    and 待定 placeholders are excluded since they don't enter the matrix
+  //    with a real magnitude.
+  const valueRangeWarning = useMemo<string | null>(() => {
+    let maxAbs = 0;
+    let minAbs = Infinity;
+    for (const el of elements) {
+      if (el.type === "wire" || el.type === "ground") continue;
+      if (el.unknown) continue;
+      if (el.value === undefined || el.value === null) continue;
+      if (!Number.isFinite(el.value)) continue;
+      const a = Math.abs(el.value);
+      if (a === 0) continue;
+      if (a > maxAbs) maxAbs = a;
+      if (a < minAbs) minAbs = a;
+    }
+    if (!Number.isFinite(minAbs) || maxAbs === 0) return null;
+    const ratio = maxAbs / minAbs;
+    if (ratio < 1e9) return null;
+    const order = Math.round(Math.log10(ratio));
+    return `元件数值跨度较大（约 10^${order}），结果可能存在浮点噪声，建议复核单位或量级。`;
   }, [elements]);
 
   // ── Canvas interaction
@@ -1466,6 +1502,19 @@ export default function Solve() {
                   </p>
                 </div>
               )}
+              {/* Safety net A: client-side value-range advisory shown above
+                  the green/red status bar so the student sees it before they
+                  submit. Gray-styled (not destructive) — the circuit is still
+                  solvable, just numerically risky. */}
+              {valueRangeWarning && (
+                <div
+                  data-testid="value-range-warning"
+                  className="px-3 py-2 flex items-start gap-2 text-[11px] leading-relaxed text-muted-foreground border-b bg-muted/30"
+                >
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 opacity-70" />
+                  <span className="flex-1">{valueRangeWarning}</span>
+                </div>
+              )}
               {/* Live validation status (auto-checks on every elements change) */}
               <div
                 data-testid="circuit-status"
@@ -1534,6 +1583,17 @@ export default function Solve() {
                 // doesn't read them as ground truth.
                 const isPlaceholder =
                   unknownInLastSolve.length > 0 || analysis?.placeholderBased === true;
+                // Safety net B: surface the server-side condition-number
+                // estimate when it crosses ~1e8 — at that point the matrix
+                // is close to singular and the answers below may carry
+                // significant floating-point error. We render this as a
+                // standalone yellow banner above the tables (not just a
+                // badge) so it's hard to miss.
+                const condNum = solution.conditionNumber;
+                const illConditioned =
+                  typeof condNum === "number" &&
+                  Number.isFinite(condNum) &&
+                  condNum > 1e8;
                 const numCellCls = isPlaceholder
                   ? "px-3 py-2.5 text-right font-mono text-muted-foreground/80 italic font-medium text-xs"
                   : "px-3 py-2.5 text-right font-mono text-primary font-semibold text-xs";
@@ -1545,6 +1605,22 @@ export default function Solve() {
                   : "rounded-xl border border-border overflow-hidden";
                 return (
                 <>
+                  {illConditioned && (
+                    <div
+                      data-testid="condition-warning"
+                      className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 flex items-start gap-2.5"
+                    >
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-700 dark:text-amber-400" />
+                      <div className="space-y-0.5">
+                        <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+                          数值警告：电路方程组接近奇异
+                        </p>
+                        <p className="text-[11px] leading-relaxed text-amber-700/85 dark:text-amber-400/85">
+                          条件数估计 ≈ {condNum!.toExponential(1)}（{">"}10^8），下方结果可能存在显著浮点误差。建议复核元件量级或拓扑。
+                        </p>
+                      </div>
+                    </div>
+                  )}
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="text-sm font-semibold">节点电压</h3>

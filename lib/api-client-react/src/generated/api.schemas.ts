@@ -84,6 +84,17 @@ export interface CircuitSolution {
   nodeVoltages: NodeVoltage[];
   branchCurrents: BranchCurrent[];
   analysisType: string;
+  /** Infinity-norm condition number of the MNA matrix, computed as
+‖A‖∞ × ‖A⁻¹‖∞. The solver augments Gauss–Jordan elimination
+with the n×n identity to recover A⁻¹ for free during the same
+O(n³) factorisation, so this is an exact value (subject to
+floating-point), not a lower bound. Values above ~1e8 indicate
+the matrix is close to singular and the numerical solution may
+carry significant floating-point error; the client surfaces a
+warning chip when this threshold is crossed. Omitted when n <= 1
+(no elimination steps performed).
+ */
+  conditionNumber?: number;
 }
 
 export type SolveErrorReason =
@@ -134,7 +145,13 @@ export interface AnalysisResult {
   steps: AnalysisStep[];
   summary: string;
   keyInsights?: string[];
-  /** True if AI's independently computed answers matched the MNA solver within tolerance */
+  /** True if AI's independently computed answers matched the MNA solver
+within tolerance. NOTE: when placeholderBased is true the request
+uses soft-verify (numerical mismatches are logged but not enforced),
+so `verified` is always true in that mode and should be interpreted
+together with `placeholderBased`. Use `placeholderBased` to know
+whether the symbolic-explanation pathway was taken.
+ */
   verified?: boolean;
   /** How many AI attempts were made (1-3) */
   verificationAttempts?: number;

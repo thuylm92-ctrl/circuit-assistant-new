@@ -57,6 +57,14 @@ A Chinese-language mobile-first web app helping university students solve circui
 - Response includes `verified` (boolean), `verificationAttempts` (1–3), and `verificationNote` (only when failed).
 - Frontend shows a green "已校验 · N/3" badge when verified, an amber "未通过校验" badge + warning panel when failed. The MNA numerical answer is always displayed regardless of verification outcome.
 
+### Numerical safety nets (pre-deploy hardening)
+Two complementary warnings catch numerically risky inputs/outputs without ever blocking the user.
+
+- **Safety Net A — client-side value-range advisory** (in `artifacts/circuit-solver/src/pages/solve.tsx`, `valueRangeWarning` memo). Checks the ratio of largest to smallest finite `|value|` across all non-wire/non-ground/non-`unknown` elements; if it exceeds `1e9` it shows a *gray* hint above the green/red `circuit-status` bar reading "元件数值跨度较大（约 10^N），结果可能存在浮点噪声…". Test id: `value-range-warning`. Designed to catch unit-mismatch bugs (e.g. user typed `1000000000` instead of `1k`).
+- **Safety Net B — server-side condition-number warning** (in `artifacts/api-server/src/lib/mna-solver.ts`, `solveLinearSystem`). The MNA solver augments Gauss–Jordan elimination with the n×n identity to recover `A⁻¹` for free, then returns `conditionNumber = ‖A‖∞ × ‖A⁻¹‖∞` in the `CircuitSolution` (added to the OpenAPI schema). When `> 1e8`, the results page renders an amber/yellow warning panel ("数值警告：电路方程组接近奇异 …条件数估计 ≈ X.Xe+N") above the node/branch tables. Test id: `condition-warning`. Pivot-ratio is intentionally *not* used as the estimator since partial pivoting masks ill-conditioning (e.g. a R1=1, R2=1e12 divider has tiny pivot ratio but the matrix's true cond_∞ is still small enough not to fire — both are correct, the two safety nets are orthogonal).
+
+The 10-test baseline accuracy script lives at `.local/accuracy-tests.mjs` and exercises 分压 / 分流 / 串并联 / VCVS / CCCS / 平衡电桥 / 戴维南 / RC低通 / RLC谐振 / 拓扑约束。 Run with `node .local/accuracy-tests.mjs`. Pre-deploy run: 10/10 passing.
+
 ### Math typesetting in 解析
 - `step.formula` (treated as a complete LaTeX expression) and `summary` / `step.explanation` / `keyInsights` (mixed text containing `$$...$$`, `\(...\)`, or `\[...\]` segments) are rendered with KaTeX via `artifacts/circuit-solver/src/components/math-content.tsx`.
 - The component is loaded via `React.lazy` so the ~265KB JS / ~29KB CSS chunk (plus KaTeX fonts) is split out of the main bundle and only fetched when the user opens the 结果 tab. Each `<MathContent>` usage in `solve.tsx` is wrapped in a `<Suspense>` whose fallback shows the original raw string.

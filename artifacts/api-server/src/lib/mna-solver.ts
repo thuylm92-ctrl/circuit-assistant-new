@@ -61,6 +61,15 @@ export interface CircuitSolution {
   nodeVoltages: NodeVoltage[];
   branchCurrents: BranchCurrent[];
   analysisType: string;
+  /**
+   * Rough condition number estimate of the MNA matrix, computed as the ratio
+   * of the largest absolute pivot to the smallest absolute pivot encountered
+   * during Gaussian elimination. Values above ~1e8 indicate the matrix is
+   * close to singular and the numerical solution may carry significant
+   * floating-point error. Omitted (undefined) when the matrix is 1x1 or no
+   * elimination steps were performed.
+   */
+  conditionNumber?: number;
 }
 
 export interface SolveError {
@@ -106,12 +115,45 @@ function cNeg(a: Complex): Complex {
 /**
  * Gaussian elimination with partial pivoting on a complex matrix.
  * Solves Ax = b, where A is n×n and b is n×1 complex.
- * Returns x or null if singular.
+ *
+ * Returns:
+ *   - { x, conditionEstimate } on success. conditionEstimate is computed as
+ *     ‖A‖∞ × ‖A⁻¹‖∞ — the standard infinity-norm condition number — by
+ *     augmenting the Gauss–Jordan elimination with the n×n identity matrix
+ *     so we recover A⁻¹ alongside x for free (O(n³), same complexity class
+ *     as the solve itself; n is at most a few dozen for student circuits).
+ *     This is a true upper bound on the relative error amplification, unlike
+ *     a raw pivot-ratio which partial pivoting can mask. Values above ~1e8
+ *     mean the matrix is numerically close to singular. undefined when n <= 1.
+ *   - null if the matrix is singular (smallest pivot below 1e-15).
  */
-function solveLinearSystem(A: Complex[][], b: Complex[]): Complex[] | null {
+function solveLinearSystem(
+  A: Complex[][],
+  b: Complex[],
+): { x: Complex[]; conditionEstimate?: number } | null {
   const n = A.length;
-  // Augmented matrix
-  const M: Complex[][] = A.map((row, i) => [...row, b[i]]);
+
+  // Compute ‖A‖∞ (max row sum of |a_ij|) on the *original* A before mutation.
+  let aInfNorm = 0;
+  for (let i = 0; i < n; i++) {
+    let rowSum = 0;
+    for (let j = 0; j < n; j++) {
+      rowSum += Math.hypot(A[i][j][0], A[i][j][1]);
+    }
+    if (rowSum > aInfNorm) aInfNorm = rowSum;
+  }
+
+  // Augmented matrix: [A | b | I]. Width = n + 1 + n.
+  // After full Gauss–Jordan: row i becomes [0...diag_i...0 | x_i | (A⁻¹)_i * diag_i]
+  // and we recover x_i = aug[i][n] / aug[i][i] and (A⁻¹)_ij = aug[i][n+1+j] / aug[i][i].
+  const totalCols = 2 * n + 1;
+  const M: Complex[][] = A.map((row, i) => {
+    const augRow: Complex[] = new Array(totalCols);
+    for (let j = 0; j < n; j++) augRow[j] = row[j];
+    augRow[n] = b[i];
+    for (let j = 0; j < n; j++) augRow[n + 1 + j] = i === j ? [1, 0] : [0, 0];
+    return augRow;
+  });
 
   for (let col = 0; col < n; col++) {
     // Partial pivoting
@@ -132,13 +174,33 @@ function solveLinearSystem(A: Complex[][], b: Complex[]): Complex[] | null {
     for (let row = 0; row < n; row++) {
       if (row === col) continue;
       const factor = cDiv(M[row][col], pivot);
-      for (let j = col; j <= n; j++) {
+      for (let j = col; j < totalCols; j++) {
         M[row][j] = cSub(M[row][j], cMul(factor, M[col][j]));
       }
     }
   }
 
-  return M.map((row, i) => cDiv(row[n], M[i][i]));
+  // Recover x and A⁻¹ from the row-reduced augmented matrix.
+  const x: Complex[] = new Array(n);
+  // Compute ‖A⁻¹‖∞ = max over rows of A⁻¹ of the row sum of |entries|.
+  // Note: row i of A⁻¹ is (M[i][n+1+j] / M[i][i]) for j = 0..n-1.
+  let aInvInfNorm = 0;
+  for (let i = 0; i < n; i++) {
+    const diag = M[i][i];
+    x[i] = cDiv(M[i][n], diag);
+    let rowSum = 0;
+    for (let j = 0; j < n; j++) {
+      const inv = cDiv(M[i][n + 1 + j], diag);
+      rowSum += Math.hypot(inv[0], inv[1]);
+    }
+    if (rowSum > aInvInfNorm) aInvInfNorm = rowSum;
+  }
+
+  const conditionEstimate =
+    n > 1 && Number.isFinite(aInfNorm) && Number.isFinite(aInvInfNorm)
+      ? aInfNorm * aInvInfNorm
+      : undefined;
+  return { x, conditionEstimate };
 }
 
 export function validateCircuit(input: CircuitInput): ValidationResult {
@@ -447,15 +509,17 @@ export function solveCircuit(input: CircuitInput): CircuitSolution | SolveError 
   }
 
   // Solve the system
-  const x = solveLinearSystem(Y, J);
+  const result = solveLinearSystem(Y, J);
 
-  if (x === null) {
+  if (result === null) {
     return {
       error: "电路方程组奇异，无法求解。",
       reason: "singular_matrix",
       details: "可能原因：电路中存在电压源回路、节点未连接接地，或电路拓扑导致方程无解。",
     };
   }
+
+  const { x, conditionEstimate } = result;
 
   // Extract results
   const nodeVoltages: NodeVoltage[] = nodeList.map((nodeId, i) => ({
@@ -511,5 +575,6 @@ export function solveCircuit(input: CircuitInput): CircuitSolution | SolveError 
     nodeVoltages,
     branchCurrents,
     analysisType,
+    ...(conditionEstimate !== undefined ? { conditionNumber: conditionEstimate } : {}),
   };
 }
